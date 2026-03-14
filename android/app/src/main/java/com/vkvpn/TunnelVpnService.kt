@@ -10,11 +10,6 @@ import android.os.Build
 import android.os.ParcelFileDescriptor
 import android.util.Log
 import tunnel.Tunnel
-import java.io.FileInputStream
-import java.io.FileOutputStream
-import java.net.DatagramPacket
-import java.net.DatagramSocket
-import java.net.InetAddress
 
 class TunnelVpnService : VpnService() {
 
@@ -23,7 +18,6 @@ class TunnelVpnService : VpnService() {
         const val ACTION_START = "com.vkvpn.START"
         const val ACTION_STOP = "com.vkvpn.STOP"
         const val CHANNEL_ID = "vkvpn_channel"
-        const val WG_LOCAL_PORT = 9000
         var isRunning = false
     }
 
@@ -44,9 +38,11 @@ class TunnelVpnService : VpnService() {
                 val wgPrivKey = intent.getStringExtra("wg_privkey") ?: return START_NOT_STICKY
                 val wgAddress = intent.getStringExtra("wg_address") ?: "10.66.66.2"
                 val wgDns = intent.getStringExtra("wg_dns") ?: "1.1.1.1"
+                val serverPubKey = intent.getStringExtra("wg_pubkey") ?: return START_NOT_STICKY
+                val dtlsPort = intent.getIntExtra("dtls_port", 56000)
 
                 startForeground(1, buildNotification("Connecting..."))
-                startTunnel(server, link, provider, wgPrivKey, wgAddress, wgDns)
+                startTunnel(server, link, provider, wgPrivKey, wgAddress, wgDns, serverPubKey, dtlsPort)
             }
             ACTION_STOP -> {
                 stopTunnel()
@@ -59,20 +55,12 @@ class TunnelVpnService : VpnService() {
 
     private fun startTunnel(
         server: String, link: String, provider: String,
-        wgPrivKey: String, wgAddress: String, wgDns: String
+        wgPrivKey: String, wgAddress: String, wgDns: String,
+        serverPubKey: String, dtlsPort: Int
     ) {
         tunnelThread = Thread {
             try {
-                // 1. Start TURN tunnel (Go library) — listens on localhost:9000
-                val vkLink = if (provider == "vk") link else ""
-                val yaLink = if (provider == "yandex") link else ""
-
-                // Note: setLogCallback not available via gomobile (can't export func(string))
-                // Tunnel logs go to stdout/logcat via Go's log package
-
-                Tunnel.start(server, vkLink, yaLink, 0L, WG_LOCAL_PORT.toLong())
-
-                // 2. Create VPN interface (TUN device)
+                // 1. Create VPN interface (TUN device) FIRST
                 val builder = Builder()
                     .setSession("VKVPN")
                     .addAddress(wgAddress, 32)
@@ -80,30 +68,43 @@ class TunnelVpnService : VpnService() {
                     .setMtu(1280)
                     .setBlocking(true)
 
-                // Add DNS servers
                 wgDns.split(",").map { it.trim() }.filter { it.isNotEmpty() }.forEach {
                     builder.addDnsServer(it)
                 }
 
-                // Exclude our own TURN traffic from the VPN
+                // Exclude our own app so TURN traffic bypasses VPN
                 builder.addDisallowedApplication(packageName)
 
                 vpnInterface = builder.establish()
                 if (vpnInterface == null) {
                     Log.e(TAG, "Failed to establish VPN")
-                    Tunnel.stop()
                     return@Thread
                 }
 
+                // 2. Detach fd — Go/wireguard-go now owns the TUN device
+                val tunFd = vpnInterface!!.detachFd()
+                vpnInterface = null
+
                 isRunning = true
                 updateNotification("Connected")
-                Log.i(TAG, "VPN established, bridging TUN <-> WireGuard <-> TURN")
 
-                // 3. Bridge: TUN fd <-> WireGuard UDP (localhost:WG_LOCAL_PORT)
-                // WireGuard runs as a standard UDP endpoint on localhost
-                // We read IP packets from TUN, send as WireGuard UDP to localhost:9000
-                // The TURN tunnel forwards them to the VPS where the WG server runs
-                bridgeTunToWg(vpnInterface!!.fd, wgPrivKey, wgAddress, server)
+                // 3. Start tunnel: wireguard-go reads TUN fd, encrypts,
+                //    DTLS+TURN forwards to server
+                val vkLink = if (provider == "vk") link else ""
+                val yaLink = if (provider == "yandex") link else ""
+                val peerAddr = "$server:$dtlsPort"
+
+                Log.i(TAG, "Starting tunnel to $peerAddr")
+                Tunnel.start(
+                    tunFd.toLong(), peerAddr,
+                    vkLink, yaLink,
+                    0L, wgPrivKey, serverPubKey
+                )
+
+                // Tunnel.start() returns immediately; wait until stopped
+                while (isRunning && Tunnel.isRunning()) {
+                    Thread.sleep(1000)
+                }
 
             } catch (e: Exception) {
                 Log.e(TAG, "Tunnel error", e)
@@ -114,75 +115,10 @@ class TunnelVpnService : VpnService() {
         }.also { it.start() }
     }
 
-    /**
-     * Bridge between Android TUN device and WireGuard over TURN tunnel.
-     *
-     * This function reads raw IP packets from the TUN device,
-     * wraps them in WireGuard protocol, and sends to localhost:9000
-     * where the TURN tunnel picks them up and sends to VPS.
-     *
-     * Note: For a production app, we'd use wireguard-go directly.
-     * For now, we use Android's built-in WireGuard support or
-     * send raw packets through the TURN tunnel to a WG server on VPS.
-     *
-     * The VPS runs WireGuard server which handles the encryption.
-     * Here we just need to forward TUN packets through the tunnel.
-     */
-    private fun bridgeTunToWg(tunFd: Int, wgPrivKey: String, wgAddress: String, server: String) {
-        val tunIn = FileInputStream(vpnInterface!!.fileDescriptor)
-        val tunOut = FileOutputStream(vpnInterface!!.fileDescriptor)
-
-        // UDP socket to local WireGuard (via TURN tunnel)
-        val wgSocket = DatagramSocket()
-        protect(wgSocket) // Prevent VPN loop
-
-        val localAddr = InetAddress.getByName("127.0.0.1")
-
-        // TUN -> WG (read from TUN, send to localhost:9000 which goes through TURN to VPS WG)
-        val sendThread = Thread {
-            val buf = ByteArray(1600)
-            try {
-                while (isRunning) {
-                    val n = tunIn.read(buf)
-                    if (n > 0) {
-                        val pkt = DatagramPacket(buf, n, localAddr, WG_LOCAL_PORT)
-                        wgSocket.send(pkt)
-                    }
-                }
-            } catch (e: Exception) {
-                if (isRunning) Log.e(TAG, "TUN->WG error", e)
-            }
-        }
-
-        // WG -> TUN (receive from WG, write to TUN)
-        val recvThread = Thread {
-            val buf = ByteArray(1600)
-            try {
-                while (isRunning) {
-                    val pkt = DatagramPacket(buf, buf.size)
-                    wgSocket.receive(pkt)
-                    if (pkt.length > 0) {
-                        tunOut.write(buf, 0, pkt.length)
-                    }
-                }
-            } catch (e: Exception) {
-                if (isRunning) Log.e(TAG, "WG->TUN error", e)
-            }
-        }
-
-        sendThread.start()
-        recvThread.start()
-        sendThread.join()
-        recvThread.join()
-
-        wgSocket.close()
-    }
-
     private fun stopTunnel() {
         isRunning = false
         Tunnel.stop()
-        vpnInterface?.close()
-        vpnInterface = null
+        // vpnInterface is null after detachFd — fd is closed by Go
         tunnelThread?.interrupt()
     }
 

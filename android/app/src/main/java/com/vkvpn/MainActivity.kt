@@ -69,7 +69,8 @@ class MainActivity : Activity() {
     private fun hasConfig(): Boolean {
         val prefs = getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         return prefs.getString("server", "")?.isNotEmpty() == true &&
-               prefs.getString("wg_privkey", "")?.isNotEmpty() == true
+               prefs.getString("wg_privkey", "")?.isNotEmpty() == true &&
+               prefs.getString("wg_pubkey", "")?.isNotEmpty() == true
     }
 
     private fun showScreen() {
@@ -101,6 +102,8 @@ class MainActivity : Activity() {
             prefs.putString("wg_privkey", json.getString("wg_privkey"))
             prefs.putString("wg_address", json.optString("wg_address", "10.66.66.2"))
             prefs.putString("wg_dns", json.optString("wg_dns", "1.1.1.1"))
+            prefs.putString("wg_pubkey", json.getString("wg_pubkey"))
+            prefs.putInt("dtls_port", json.optInt("dtls_port", 56000))
             prefs.putString("name", json.optString("name", ""))
             prefs.apply()
 
@@ -166,6 +169,8 @@ class MainActivity : Activity() {
             putExtra("wg_privkey", prefs.getString("wg_privkey", ""))
             putExtra("wg_address", prefs.getString("wg_address", "10.66.66.2"))
             putExtra("wg_dns", prefs.getString("wg_dns", "1.1.1.1"))
+            putExtra("wg_pubkey", prefs.getString("wg_pubkey", ""))
+            putExtra("dtls_port", prefs.getInt("dtls_port", 56000))
         }
         startForegroundService(intent)
         Toast.makeText(this, "Connecting...", Toast.LENGTH_SHORT).show()

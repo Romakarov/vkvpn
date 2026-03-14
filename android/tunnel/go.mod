@@ -8,6 +8,7 @@ require (
 	github.com/pion/dtls/v3 v3.1.2
 	github.com/pion/logging v0.2.4
 	github.com/pion/turn/v5 v5.0.3
+	golang.zx2c4.com/wireguard v0.0.0-20250521234502-f333402bd9cb
 )
 
 require (
@@ -17,5 +18,7 @@ require (
 	github.com/wlynxg/anet v0.0.5 // indirect
 	golang.org/x/crypto v0.47.0 // indirect
 	golang.org/x/mobile v0.0.0-20260312152759-81488f6aeb60 // indirect
+	golang.org/x/net v0.48.0 // indirect
 	golang.org/x/sys v0.42.0 // indirect
+	golang.zx2c4.com/wintun v0.0.0-20230126152724-0fa3db229ce2 // indirect
 )
