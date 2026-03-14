@@ -85,9 +85,6 @@ class TunnelVpnService : VpnService() {
                 val tunFd = vpnInterface!!.detachFd()
                 vpnInterface = null
 
-                isRunning = true
-                updateNotification("Connected")
-
                 // 3. Start tunnel: wireguard-go reads TUN fd, encrypts,
                 //    DTLS+TURN forwards to server
                 val vkLink = if (provider == "vk") link else ""
@@ -101,10 +98,16 @@ class TunnelVpnService : VpnService() {
                     0L, wgPrivKey, serverPubKey
                 )
 
+                // Mark running AFTER successful start
+                isRunning = true
+                updateNotification("Connected")
+
                 // Tunnel.start() returns immediately; wait until stopped
                 while (isRunning && Tunnel.isRunning()) {
                     Thread.sleep(1000)
                 }
+
+                updateNotification("Disconnected")
 
             } catch (e: Exception) {
                 Log.e(TAG, "Tunnel error", e)
