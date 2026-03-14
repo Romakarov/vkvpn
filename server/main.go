@@ -662,6 +662,48 @@ func apiClientConfig(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{"config": conf})
 }
 
+// apiAppConfig returns a full app config JSON for Android/desktop clients.
+// Contains everything needed: server, WG keys, active link.
+func apiAppConfig(w http.ResponseWriter, r *http.Request) {
+	name := r.URL.Query().Get("name")
+	if name == "" {
+		http.Error(w, "name required", http.StatusBadRequest)
+		return
+	}
+
+	cfg.mu.RLock()
+	var found *Client
+	for _, cl := range cfg.Clients {
+		if cl.Name == name {
+			c := cl
+			found = &c
+			break
+		}
+	}
+	if found == nil {
+		cfg.mu.RUnlock()
+		http.Error(w, "client not found", http.StatusNotFound)
+		return
+	}
+
+	appCfg := map[string]interface{}{
+		"server":     cfg.ServerIP,
+		"link":       cfg.ActiveLink,
+		"provider":   cfg.LinkType,
+		"wg_privkey": found.PrivateKey,
+		"wg_pubkey":  cfg.ServerPub,
+		"wg_address": found.IP,
+		"wg_dns":     cfg.DNS,
+		"wg_port":    cfg.WGPort,
+		"dtls_port":  cfg.DTLSPort,
+		"name":       found.Name,
+	}
+	cfg.mu.RUnlock()
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(appCfg)
+}
+
 func apiLogs(w http.ResponseWriter, r *http.Request) {
 	var afterID int64
 	if v := r.URL.Query().Get("after"); v != "" {
@@ -770,6 +812,7 @@ func main() {
 	mux.HandleFunc("/api/clients/delete", authMiddleware(apiDeleteClient))
 	mux.HandleFunc("/api/clients/toggle", authMiddleware(apiToggleClient))
 	mux.HandleFunc("/api/clients/config", authMiddleware(apiClientConfig))
+	mux.HandleFunc("/api/clients/appconfig", authMiddleware(apiAppConfig))
 	mux.HandleFunc("/api/logs", authMiddleware(apiLogs))
 
 	webContent, _ := fs.Sub(webFS, "web")

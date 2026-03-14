@@ -297,13 +297,31 @@ input:focus, select:focus { border-color: var(--accent); }
 <div class="modal-overlay" id="config-modal">
   <div class="modal">
     <h3 id="modal-title">Client Config</h3>
-    <p style="font-size:13px;color:var(--text2);margin-bottom:12px">
-      Scan QR code in WireGuard app or download config file.
-    </p>
-    <div class="qr-container" id="qr-container"></div>
-    <textarea class="config-text" id="config-text" readonly></textarea>
+    <div style="display:flex;gap:8px;margin-bottom:16px">
+      <button class="btn btn-sm btn-primary" id="tab-wg" onclick="showTab('wg')">WireGuard (iPhone)</button>
+      <button class="btn btn-sm btn-success" id="tab-app" onclick="showTab('app')">VKVPN App (Android)</button>
+    </div>
+    <div id="tab-wg-content">
+      <p style="font-size:13px;color:var(--text2);margin-bottom:12px">
+        Scan QR in WireGuard app or download .conf file.
+      </p>
+      <div class="qr-container" id="qr-container"></div>
+      <textarea class="config-text" id="config-text" readonly></textarea>
+      <div class="flex-row mt-12">
+        <button class="btn btn-primary" onclick="downloadConfig()">Download .conf</button>
+      </div>
+    </div>
+    <div id="tab-app-content" style="display:none">
+      <p style="font-size:13px;color:var(--text2);margin-bottom:12px">
+        Scan QR in VKVPN Android app. Config includes server + TURN link + WireGuard keys.
+      </p>
+      <div class="qr-container" id="app-qr-container"></div>
+      <textarea class="config-text" id="app-config-text" readonly style="min-height:120px"></textarea>
+      <div class="flex-row mt-12">
+        <button class="btn btn-success" onclick="copyAppConfig()">Copy Config</button>
+      </div>
+    </div>
     <div class="flex-row mt-12">
-      <button class="btn btn-primary" onclick="downloadConfig()">Download .conf</button>
       <button class="btn btn-danger" onclick="closeModal()">Close</button>
     </div>
   </div>
@@ -431,17 +449,38 @@ async function toggleClient(name) {
 
 async function showConfig(name) {
   currentConfigName = name;
+
+  // Load WireGuard config
   const data = await api(`/api/clients/config?name=${encodeURIComponent(name)}`);
   document.getElementById('modal-title').textContent = `Config: ${name}`;
   document.getElementById('config-text').value = data.config;
 
-  // Generate QR
   const qr = qrcode(0, 'M');
   qr.addData(data.config);
   qr.make();
   document.getElementById('qr-container').innerHTML = qr.createSvgTag(4, 0);
 
+  // Load app config
+  try {
+    const appData = await api(`/api/clients/appconfig?name=${encodeURIComponent(name)}`);
+    const appJson = JSON.stringify(appData);
+    document.getElementById('app-config-text').value = appJson;
+
+    const qr2 = qrcode(0, 'L');
+    qr2.addData(appJson);
+    qr2.make();
+    document.getElementById('app-qr-container').innerHTML = qr2.createSvgTag(3, 0);
+  } catch(e) {}
+
+  showTab('wg');
   document.getElementById('config-modal').classList.add('show');
+}
+
+function showTab(tab) {
+  document.getElementById('tab-wg-content').style.display = tab === 'wg' ? '' : 'none';
+  document.getElementById('tab-app-content').style.display = tab === 'app' ? '' : 'none';
+  document.getElementById('tab-wg').className = 'btn btn-sm ' + (tab === 'wg' ? 'btn-primary' : 'btn-danger');
+  document.getElementById('tab-app').className = 'btn btn-sm ' + (tab === 'app' ? 'btn-success' : 'btn-danger');
 }
 
 function downloadConfig() {
@@ -451,6 +490,15 @@ function downloadConfig() {
   a.href = URL.createObjectURL(blob);
   a.download = currentConfigName + '.conf';
   a.click();
+}
+
+function copyAppConfig() {
+  const text = document.getElementById('app-config-text').value;
+  navigator.clipboard.writeText(text).then(() => toast('Copied!')).catch(() => {
+    document.getElementById('app-config-text').select();
+    document.execCommand('copy');
+    toast('Copied!');
+  });
 }
 
 function closeModal() {
