@@ -65,12 +65,8 @@ func (c *pipeConn) WriteTo(p []byte, addr net.Addr) (n int, err error) {
 			err = net.ErrClosed
 		}
 	}()
-	select {
-	case c.peer.ch <- packet{data: buf, addr: addr}:
-		return len(p), nil
-	default:
-		return len(p), nil
-	}
+	c.peer.ch <- packet{data: buf, addr: addr}
+	return len(p), nil
 }
 
 func (c *pipeConn) Close() error {

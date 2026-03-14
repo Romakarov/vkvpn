@@ -138,6 +138,8 @@ func detectInterface() string {
 }
 
 func (c *Config) applyWireGuard() error {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	confPath := "/etc/wireguard/wg0.conf"
 	iface := detectInterface()
 	var sb strings.Builder
@@ -266,7 +268,7 @@ func runDTLSServer(ctx context.Context, listenAddr string, connectAddr string) {
 		Certificates:          []tls.Certificate{certificate},
 		ExtendedMasterSecret:  dtls.RequireExtendedMasterSecret,
 		CipherSuites:          []dtls.CipherSuiteID{dtls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256},
-		ConnectionIDGenerator: dtls.RandomCIDGenerator(8),
+		ConnectionIDGenerator: dtls.OnlySendCIDGenerator(),
 	}
 
 	addr, err := net.ResolveUDPAddr("udp", listenAddr)

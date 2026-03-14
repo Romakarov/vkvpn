@@ -240,7 +240,9 @@ func Start(tunFd int, peerAddr, vkLink, yandexLink string, connections int, wgPr
 	// Start DTLS+TURN connection goroutines
 	go func() {
 		var wg sync.WaitGroup
-		t := time.Tick(100 * time.Millisecond)
+		ticker := time.NewTicker(100 * time.Millisecond)
+		defer ticker.Stop()
+		t := ticker.C
 
 		okchan := make(chan struct{})
 		connchan := make(chan net.PacketConn)
@@ -357,10 +359,7 @@ func (c *pipeConn) WriteTo(p []byte, addr net.Addr) (int, error) {
 	buf := make([]byte, len(p))
 	copy(buf, p)
 	defer func() { recover() }()
-	select {
-	case c.peer.ch <- packet{data: buf, addr: addr}:
-	default:
-	}
+	c.peer.ch <- packet{data: buf, addr: addr}
 	return len(p), nil
 }
 
@@ -498,7 +497,9 @@ func getYandexCreds(link string) (string, string, string, error) {
 	}
 
 	var cr ConfResp
-	json.NewDecoder(resp.Body).Decode(&cr)
+	if err := json.NewDecoder(resp.Body).Decode(&cr); err != nil {
+		return "", "", "", fmt.Errorf("decode conference response: %s", err)
+	}
 
 	h := http.Header{}
 	h.Set("Origin", "https://telemost.yandex.ru")

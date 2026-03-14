@@ -801,7 +801,9 @@ func main() {
 	}()
 
 	wg1 := sync.WaitGroup{}
-	t := time.Tick(100 * time.Millisecond)
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	t := ticker.C
 	if *direct {
 		for i := 0; i < *n; i++ {
 			wg1.Add(1)
