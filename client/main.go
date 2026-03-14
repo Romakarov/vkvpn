@@ -98,7 +98,7 @@ func getVkCreds(link string) (user, pass, addr string, err error) {
 	}
 	token3 := resp["data"].(map[string]interface{})["access_token"].(string)
 
-	data = fmt.Sprintf("vk_join_link=https://vk.ru/call/join/%s&name=123&access_token=%s", link, token3)
+	data = fmt.Sprintf("vk_join_link=https://vk.com/call/join/%s&name=123&access_token=%s", link, token3)
 	url = "https://api.vk.ru/method/calls.getAnonymousToken?v=5.264"
 	resp, err = doRequest(data, url)
 	if err != nil {
@@ -131,7 +131,7 @@ func getVkCreds(link string) (user, pass, addr string, err error) {
 
 func getYandexCreds(link string) (string, string, string, error) {
 	const telemostConfHost = "cloud-api.yandex.ru"
-	telemostConfPath := fmt.Sprintf("%s%s%s", "/telemost_front/v2/telemost/conferences/https%%3A%%2F%%2Ftelemost.yandex.ru%%2Fj%%2F", link, "/connection?next_gen_media_platform_allowed=false")
+	telemostConfPath := fmt.Sprintf("%s%s%s", "/telemost_front/v2/telemost/conferences/https%3A%2F%2Ftelemost.yandex.ru%2Fj%2F", link, "/connection?next_gen_media_platform_allowed=false")
 	const userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:144.0) Gecko/20100101 Firefox/144.0"
 
 	type ConferenceResponse struct {

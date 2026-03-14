@@ -436,14 +436,14 @@ func getVkCreds(link string) (user, pass, addr string, err error) {
 	}
 	token3 := resp["data"].(map[string]interface{})["access_token"].(string)
 
-	resp, err = doRequest(fmt.Sprintf("vk_join_link=https://vk.ru/call/join/%s&name=123&access_token=%s", link, token3),
+	resp, err = doRequest(fmt.Sprintf("vk_join_link=https://vk.com/call/join/%s&name=123&access_token=%s", link, token3),
 		"https://api.vk.ru/method/calls.getAnonymousToken?v=5.264")
 	if err != nil {
 		return "", "", "", err
 	}
 	token4 := resp["response"].(map[string]interface{})["token"].(string)
 
-	resp, err = doRequest(fmt.Sprintf("%s%s%s", "session_data=%%7B%%22version%%22%%3A2%%2C%%22device_id%%22%%3A%%22", uuid.New(), "%%22%%2C%%22client_version%%22%%3A1.1%%2C%%22client_type%%22%%3A%%22SDK_JS%%22%%7D&method=auth.anonymLogin&format=JSON&application_key=CGMMEJLGDIHBABABA"),
+	resp, err = doRequest(fmt.Sprintf("%s%s%s", "session_data=%7B%22version%22%3A2%2C%22device_id%22%3A%22", uuid.New(), "%22%2C%22client_version%22%3A1.1%2C%22client_type%22%3A%22SDK_JS%22%7D&method=auth.anonymLogin&format=JSON&application_key=CGMMEJLGDIHBABABA"),
 		"https://calls.okcdn.ru/fb.do")
 	if err != nil {
 		return "", "", "", err

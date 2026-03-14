@@ -268,7 +268,7 @@ func runDTLSServer(ctx context.Context, listenAddr string, connectAddr string) {
 		Certificates:          []tls.Certificate{certificate},
 		ExtendedMasterSecret:  dtls.RequireExtendedMasterSecret,
 		CipherSuites:          []dtls.CipherSuiteID{dtls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256},
-		ConnectionIDGenerator: dtls.OnlySendCIDGenerator(),
+		ConnectionIDGenerator: dtls.RandomCIDGenerator(8),
 	}
 
 	addr, err := net.ResolveUDPAddr("udp", listenAddr)
