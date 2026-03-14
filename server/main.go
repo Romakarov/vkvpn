@@ -818,7 +818,24 @@ func main() {
 	mux.HandleFunc("/api/logs", authMiddleware(apiLogs))
 
 	webContent, _ := fs.Sub(webFS, "web")
-	mux.Handle("/", http.FileServer(http.FS(webContent)))
+	fileServer := http.FileServer(http.FS(webContent))
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		cfg.mu.RLock()
+		pass := cfg.AdminPass
+		cfg.mu.RUnlock()
+		if pass != "" {
+			if tok := r.URL.Query().Get("token"); tok == pass {
+				http.SetCookie(w, &http.Cookie{
+					Name:     "admin_token",
+					Value:    pass,
+					Path:     "/",
+					MaxAge:   86400 * 30,
+					HttpOnly: true,
+				})
+			}
+		}
+		fileServer.ServeHTTP(w, r)
+	})
 
 	server := &http.Server{Addr: *webAddr, Handler: mux}
 	go func() {
