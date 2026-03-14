@@ -35,7 +35,7 @@ import (
 
 type getCredsFunc func(string) (string, string, string, error)
 
-func getVkCreds(link string) (string, string, string, error) {
+func getVkCreds(link string) (user, pass, addr string, err error) {
 	doRequest := func(data string, url string) (resp map[string]interface{}, err error) {
 		client := &http.Client{
 			Timeout: 20 * time.Second,
@@ -61,9 +61,8 @@ func getVkCreds(link string) (string, string, string, error) {
 		if err != nil {
 			return nil, err
 		}
-		err = json.Unmarshal(body, &resp)
-		if err != nil {
-			return nil, err
+		if err = json.Unmarshal(body, &resp); err != nil {
+			return nil, fmt.Errorf("JSON decode: %s (body: %s)", err, string(body))
 		}
 		return resp, nil
 	}
@@ -71,13 +70,13 @@ func getVkCreds(link string) (string, string, string, error) {
 	var resp map[string]interface{}
 	defer func() {
 		if r := recover(); r != nil {
-			log.Panicf("get TURN creds error: %v\n\n", resp)
+			err = fmt.Errorf("VK creds parse error: %v (response: %v)", r, resp)
 		}
 	}()
 
 	data := "client_secret=QbYic1K3lEV5kTGiqlq2&client_id=6287487&scopes=audio_anonymous%2Cvideo_anonymous%2Cphotos_anonymous%2Cprofile_anonymous&isApiOauthAnonymEnabled=false&version=1&app_id=6287487"
 	url := "https://login.vk.ru/?act=get_anonym_token"
-	resp, err := doRequest(data, url)
+	resp, err = doRequest(data, url)
 	if err != nil {
 		return "", "", "", fmt.Errorf("request error:%s", err)
 	}
@@ -99,7 +98,7 @@ func getVkCreds(link string) (string, string, string, error) {
 	}
 	token3 := resp["data"].(map[string]interface{})["access_token"].(string)
 
-	data = fmt.Sprintf("vk_join_link=https://vk.com/call/join/%s&name=123&access_token=%s", link, token3)
+	data = fmt.Sprintf("vk_join_link=https://vk.ru/call/join/%s&name=123&access_token=%s", link, token3)
 	url = "https://api.vk.ru/method/calls.getAnonymousToken?v=5.264"
 	resp, err = doRequest(data, url)
 	if err != nil {
@@ -122,12 +121,12 @@ func getVkCreds(link string) (string, string, string, error) {
 		return "", "", "", fmt.Errorf("request error:%s", err)
 	}
 
-	user := resp["turn_server"].(map[string]interface{})["username"].(string)
-	pass := resp["turn_server"].(map[string]interface{})["credential"].(string)
+	user = resp["turn_server"].(map[string]interface{})["username"].(string)
+	pass = resp["turn_server"].(map[string]interface{})["credential"].(string)
 	turnURL := resp["turn_server"].(map[string]interface{})["urls"].([]interface{})[0].(string)
 	clean := strings.Split(turnURL, "?")[0]
-	address := strings.TrimPrefix(strings.TrimPrefix(clean, "turn:"), "turns:")
-	return user, pass, address, nil
+	addr = strings.TrimPrefix(strings.TrimPrefix(clean, "turn:"), "turns:")
+	return
 }
 
 func getYandexCreds(link string) (string, string, string, error) {
@@ -619,7 +618,7 @@ func oneTurnConnection(ctx context.Context, params *turnParams, peer *net.UDPAdd
 
 	wg := sync.WaitGroup{}
 	wg.Add(2)
-	turnctx, turncancel := context.WithCancel(context.Background())
+	turnctx, turncancel := context.WithCancel(ctx)
 	context.AfterFunc(turnctx, func() {
 		relayConn.SetDeadline(time.Now())
 		conn2.SetDeadline(time.Now())
@@ -701,14 +700,16 @@ func oneTurnConnectionLoop(ctx context.Context, params *turnParams, peer *net.UD
 		case <-ctx.Done():
 			return
 		case conn2 := <-connchan:
+			// Rate-limit: wait for ticker before creating TURN connection
 			select {
 			case <-t:
-				c := make(chan error)
-				go oneTurnConnection(ctx, params, peer, conn2, c)
-				if err := <-c; err != nil {
-					log.Printf("%s", err)
-				}
-			default:
+			case <-ctx.Done():
+				return
+			}
+			c := make(chan error)
+			go oneTurnConnection(ctx, params, peer, conn2, c)
+			if err := <-c; err != nil {
+				log.Printf("%s", err)
 			}
 		}
 	}

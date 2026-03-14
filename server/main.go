@@ -145,7 +145,7 @@ func (c *Config) applyWireGuard() error {
 	var sb strings.Builder
 	sb.WriteString("[Interface]\n")
 	sb.WriteString(fmt.Sprintf("PrivateKey = %s\n", c.ServerPriv))
-	sb.WriteString(fmt.Sprintf("Address = %s/24\n", strings.Replace(c.WGSubnet, ".0/", ".1/", 1)))
+	sb.WriteString(fmt.Sprintf("Address = %s\n", strings.Replace(c.WGSubnet, ".0/", ".1/", 1)))
 	sb.WriteString(fmt.Sprintf("ListenPort = %d\n", c.WGPort))
 	sb.WriteString(fmt.Sprintf("PostUp = iptables -A FORWARD -i wg0 -j ACCEPT; iptables -t nat -A POSTROUTING -o %s -j MASQUERADE\n", iface))
 	sb.WriteString(fmt.Sprintf("PostDown = iptables -D FORWARD -i wg0 -j ACCEPT; iptables -t nat -D POSTROUTING -o %s -j MASQUERADE\n", iface))

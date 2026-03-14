@@ -380,7 +380,7 @@ func (c *pipeConn) SetWriteDeadline(_ time.Time) error { return nil }
 
 // ─── TURN credential functions ───
 
-func getVkCreds(link string) (string, string, string, error) {
+func getVkCreds(link string) (user, pass, addr string, err error) {
 	doRequest := func(data string, url string) (resp map[string]interface{}, err error) {
 		client := &http.Client{
 			Timeout:   20 * time.Second,
@@ -402,17 +402,20 @@ func getVkCreds(link string) (string, string, string, error) {
 		if err != nil {
 			return nil, err
 		}
-		return resp, json.Unmarshal(body, &resp)
+		if err := json.Unmarshal(body, &resp); err != nil {
+			return nil, fmt.Errorf("JSON decode: %s (body: %s)", err, string(body))
+		}
+		return resp, nil
 	}
 
 	var resp map[string]interface{}
 	defer func() {
 		if r := recover(); r != nil {
-			logMsg("get TURN creds error: %v", resp)
+			err = fmt.Errorf("VK creds parse error: %v (response: %v)", r, resp)
 		}
 	}()
 
-	resp, err := doRequest("client_secret=QbYic1K3lEV5kTGiqlq2&client_id=6287487&scopes=audio_anonymous%2Cvideo_anonymous%2Cphotos_anonymous%2Cprofile_anonymous&isApiOauthAnonymEnabled=false&version=1&app_id=6287487",
+	resp, err = doRequest("client_secret=QbYic1K3lEV5kTGiqlq2&client_id=6287487&scopes=audio_anonymous%2Cvideo_anonymous%2Cphotos_anonymous%2Cprofile_anonymous&isApiOauthAnonymEnabled=false&version=1&app_id=6287487",
 		"https://login.vk.ru/?act=get_anonym_token")
 	if err != nil {
 		return "", "", "", err
@@ -433,7 +436,7 @@ func getVkCreds(link string) (string, string, string, error) {
 	}
 	token3 := resp["data"].(map[string]interface{})["access_token"].(string)
 
-	resp, err = doRequest(fmt.Sprintf("vk_join_link=https://vk.com/call/join/%s&name=123&access_token=%s", link, token3),
+	resp, err = doRequest(fmt.Sprintf("vk_join_link=https://vk.ru/call/join/%s&name=123&access_token=%s", link, token3),
 		"https://api.vk.ru/method/calls.getAnonymousToken?v=5.264")
 	if err != nil {
 		return "", "", "", err
@@ -453,12 +456,13 @@ func getVkCreds(link string) (string, string, string, error) {
 		return "", "", "", err
 	}
 
-	user := resp["turn_server"].(map[string]interface{})["username"].(string)
-	pass := resp["turn_server"].(map[string]interface{})["credential"].(string)
+	user = resp["turn_server"].(map[string]interface{})["username"].(string)
+	pass = resp["turn_server"].(map[string]interface{})["credential"].(string)
 	turnURL := resp["turn_server"].(map[string]interface{})["urls"].([]interface{})[0].(string)
 	clean := strings.Split(turnURL, "?")[0]
-	address := strings.TrimPrefix(strings.TrimPrefix(clean, "turn:"), "turns:")
-	return user, pass, address, nil
+	addr = strings.TrimPrefix(strings.TrimPrefix(clean, "turn:"), "turns:")
+	logMsg("VK creds OK: turn=%s", addr)
+	return
 }
 
 func getYandexCreds(link string) (string, string, string, error) {
@@ -696,7 +700,11 @@ func oneTurnConnection(ctx context.Context, params *turnParams, peer *net.UDPAdd
 		err = fmt.Errorf("TURN creds: %s", err1)
 		return
 	}
-	urlhost, urlport, _ := net.SplitHostPort(url)
+	urlhost, urlport, err1 := net.SplitHostPort(url)
+	if err1 != nil {
+		err = fmt.Errorf("TURN address parse: %s (url=%s)", err1, url)
+		return
+	}
 	if params.host != "" {
 		urlhost = params.host
 	}
@@ -704,7 +712,11 @@ func oneTurnConnection(ctx context.Context, params *turnParams, peer *net.UDPAdd
 		urlport = params.port
 	}
 	turnAddr := net.JoinHostPort(urlhost, urlport)
-	turnUDP, _ := net.ResolveUDPAddr("udp", turnAddr)
+	turnUDP, err1 := net.ResolveUDPAddr("udp", turnAddr)
+	if err1 != nil {
+		err = fmt.Errorf("TURN resolve: %s", err1)
+		return
+	}
 	turnAddr = turnUDP.String()
 	logMsg("TURN server: %s", turnUDP.IP)
 
@@ -820,14 +832,16 @@ func oneTurnConnectionLoop(ctx context.Context, params *turnParams, peer *net.UD
 		case <-ctx.Done():
 			return
 		case c2 := <-cch:
+			// Rate-limit: wait for ticker before creating TURN connection
 			select {
 			case <-t:
-				c := make(chan error)
-				go oneTurnConnection(ctx, params, peer, c2, c)
-				if err := <-c; err != nil {
-					logMsg("%s", err)
-				}
-			default:
+			case <-ctx.Done():
+				return
+			}
+			c := make(chan error)
+			go oneTurnConnection(ctx, params, peer, c2, c)
+			if err := <-c; err != nil {
+				logMsg("%s", err)
 			}
 		}
 	}
