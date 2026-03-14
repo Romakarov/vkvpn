@@ -1,0 +1,12 @@
+# Gradle
+.gradle/
+build/
+local.properties
+
+# Go
+vendor/
+
+# Android
+*.apk
+*.aar
+android/app/libs/

@@ -1,0 +1,133 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#1a1a2e">
+
+    <!-- Main screen (shown when config exists) -->
+    <LinearLayout
+        android:id="@+id/main_screen"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:gravity="center"
+        android:orientation="vertical"
+        android:padding="32dp"
+        android:visibility="gone">
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="8dp"
+            android:text="VKVPN"
+            android:textColor="#e94560"
+            android:textSize="32sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/tv_status"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="48dp"
+            android:text="Disconnected"
+            android:textColor="#FF6B6B"
+            android:textSize="18sp" />
+
+        <Button
+            android:id="@+id/btn_connect"
+            android:layout_width="200dp"
+            android:layout_height="200dp"
+            android:background="@drawable/btn_circle"
+            android:text="Connect"
+            android:textColor="#ffffff"
+            android:textSize="22sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/tv_client_name"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="32dp"
+            android:textColor="#555577"
+            android:textSize="14sp" />
+
+        <Button
+            android:id="@+id/btn_reset"
+            android:layout_width="wrap_content"
+            android:layout_height="40dp"
+            android:layout_marginTop="16dp"
+            android:background="@android:color/transparent"
+            android:text="Reset Config"
+            android:textColor="#555577"
+            android:textSize="13sp" />
+
+    </LinearLayout>
+
+    <!-- Setup screen (shown when no config) -->
+    <ScrollView
+        android:id="@+id/setup_screen"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:fillViewport="true">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center_horizontal"
+            android:orientation="vertical"
+            android:padding="32dp">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="48dp"
+                android:layout_marginBottom="8dp"
+                android:text="VKVPN"
+                android:textColor="#e94560"
+                android:textSize="32sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="48dp"
+                android:text="Paste config from admin panel"
+                android:textColor="#8888aa"
+                android:textSize="15sp" />
+
+            <EditText
+                android:id="@+id/et_config"
+                android:layout_width="match_parent"
+                android:layout_height="160dp"
+                android:background="@drawable/input_bg"
+                android:fontFamily="monospace"
+                android:gravity="top|start"
+                android:hint="{&quot;server&quot;:&quot;...&quot;, ...}"
+                android:inputType="textMultiLine"
+                android:padding="16dp"
+                android:textColor="#ffffff"
+                android:textColorHint="#555577"
+                android:textSize="13sp" />
+
+            <Button
+                android:id="@+id/btn_import"
+                android:layout_width="match_parent"
+                android:layout_height="56dp"
+                android:layout_marginTop="16dp"
+                android:background="@drawable/btn_connect_bg"
+                android:text="Import Config"
+                android:textColor="#ffffff"
+                android:textSize="18sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="24dp"
+                android:text="Get config from your admin"
+                android:textColor="#555577"
+                android:textSize="13sp" />
+
+        </LinearLayout>
+    </ScrollView>
+
+</FrameLayout>
