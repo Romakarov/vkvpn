@@ -17,7 +17,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.24'
+          go-version: '1.25'
 
       - name: Set up JDK
         uses: actions/setup-java@v4
@@ -37,10 +37,25 @@ jobs:
           go install golang.org/x/mobile/cmd/gobind@latest
           gomobile init
 
+      - name: Patch anet (fix go:linkname incompatibility)
+        run: |
+          cd android/tunnel
+          go mod download github.com/wlynxg/anet@v0.0.5
+          ANET_DIR=$(go env GOMODCACHE)/github.com/wlynxg/anet@v0.0.5
+          PATCH_DIR=/tmp/anet-patched
+          cp -r "$ANET_DIR" "$PATCH_DIR"
+          chmod -R u+w "$PATCH_DIR"
+          sed -i 's|//go:linkname zoneCache net.zoneCache|// patched: removed go:linkname|' "$PATCH_DIR/interface_android.go"
+          sed -i 's|//go:linkname zoneCacheX golang.org/x/net/internal/socket.zoneCache|// patched: removed go:linkname|' "$PATCH_DIR/interface_android.go"
+          echo "" >> go.mod
+          echo "replace github.com/wlynxg/anet => /tmp/anet-patched" >> go.mod
+
       - name: Build Go tunnel library (.aar)
         run: |
           cd android/tunnel
           go mod tidy
+          # Re-add mobile dependency (tidy removes it)
+          go get golang.org/x/mobile@latest
           mkdir -p ../app/libs
           gomobile bind -target=android/arm64,android/arm -androidapi 26 -o ../app/libs/tunnel.aar .
         env:
@@ -49,14 +64,11 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
 
-      - name: Generate Gradle wrapper
-        run: |
-          cd android
-          gradle wrapper --gradle-version 8.11.1
-
       - name: Build debug APK
         run: |
           cd android
+          echo "sdk.dir=$ANDROID_HOME" > local.properties
+          gradle wrapper --gradle-version 8.11.1
           ./gradlew assembleDebug
 
       - name: Upload APK
