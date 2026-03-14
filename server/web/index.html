@@ -1,0 +1,499 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>VKVPN Admin</title>
+<style>
+:root {
+  --bg: #0f0f13;
+  --card: #1a1a24;
+  --border: #2a2a3a;
+  --accent: #6c5ce7;
+  --accent2: #a29bfe;
+  --green: #00b894;
+  --red: #ff6b6b;
+  --yellow: #feca57;
+  --text: #e0e0e0;
+  --text2: #8888a0;
+  --radius: 12px;
+}
+* { margin:0; padding:0; box-sizing:border-box; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  min-height: 100vh;
+}
+.container { max-width: 900px; margin: 0 auto; padding: 20px; }
+h1 {
+  font-size: 28px;
+  font-weight: 700;
+  margin-bottom: 24px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+h1 .logo {
+  width: 36px; height: 36px;
+  background: linear-gradient(135deg, var(--accent), var(--accent2));
+  border-radius: 10px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 18px;
+}
+.cards { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 24px; }
+@media(max-width:600px) { .cards { grid-template-columns: 1fr; } }
+.card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 20px;
+}
+.card h2 {
+  font-size: 14px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--text2);
+  margin-bottom: 16px;
+}
+.card.full { grid-column: 1 / -1; }
+.stat { font-size: 32px; font-weight: 700; }
+.stat small { font-size: 14px; color: var(--text2); font-weight: 400; }
+.badge {
+  display: inline-block;
+  padding: 4px 12px;
+  border-radius: 20px;
+  font-size: 12px;
+  font-weight: 600;
+}
+.badge.on { background: rgba(0,184,148,0.15); color: var(--green); }
+.badge.off { background: rgba(255,107,107,0.15); color: var(--red); }
+
+/* Forms */
+.form-group { margin-bottom: 12px; }
+.form-group label {
+  display: block;
+  font-size: 13px;
+  color: var(--text2);
+  margin-bottom: 6px;
+}
+input, select {
+  width: 100%;
+  padding: 10px 14px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  font-size: 14px;
+  outline: none;
+  transition: border-color 0.2s;
+}
+input:focus, select:focus { border-color: var(--accent); }
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 20px;
+  border: none;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+.btn-primary { background: var(--accent); color: white; }
+.btn-primary:hover { background: var(--accent2); }
+.btn-danger { background: rgba(255,107,107,0.15); color: var(--red); }
+.btn-danger:hover { background: rgba(255,107,107,0.25); }
+.btn-sm { padding: 6px 12px; font-size: 12px; }
+.btn-success { background: rgba(0,184,148,0.15); color: var(--green); }
+.btn-success:hover { background: rgba(0,184,148,0.25); }
+
+/* Client list */
+.client-list { list-style: none; }
+.client-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border);
+}
+.client-item:last-child { border-bottom: none; }
+.client-info { flex: 1; }
+.client-name { font-weight: 600; font-size: 15px; }
+.client-meta { font-size: 12px; color: var(--text2); margin-top: 2px; }
+.client-actions { display: flex; gap: 6px; }
+
+/* Modal */
+.modal-overlay {
+  display: none;
+  position: fixed;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background: rgba(0,0,0,0.7);
+  z-index: 100;
+  align-items: center;
+  justify-content: center;
+}
+.modal-overlay.show { display: flex; }
+.modal {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 24px;
+  max-width: 500px;
+  width: 90%;
+  max-height: 90vh;
+  overflow-y: auto;
+}
+.modal h3 { margin-bottom: 16px; font-size: 18px; }
+.config-text {
+  width: 100%;
+  min-height: 200px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--green);
+  font-family: 'SF Mono', Monaco, monospace;
+  font-size: 12px;
+  padding: 12px;
+  resize: vertical;
+}
+.qr-container {
+  display: flex;
+  justify-content: center;
+  margin: 16px 0;
+  background: white;
+  border-radius: 8px;
+  padding: 16px;
+}
+
+/* Logs */
+.log-box {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px;
+  max-height: 300px;
+  overflow-y: auto;
+  font-family: 'SF Mono', Monaco, monospace;
+  font-size: 12px;
+  line-height: 1.6;
+}
+.log-time { color: var(--text2); }
+.log-msg { color: var(--text); }
+
+/* Toast */
+.toast {
+  position: fixed;
+  bottom: 20px;
+  right: 20px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px 20px;
+  font-size: 14px;
+  z-index: 200;
+  animation: slideIn 0.3s ease;
+}
+.toast.success { border-color: var(--green); }
+.toast.error { border-color: var(--red); }
+@keyframes slideIn { from { transform: translateY(20px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+
+/* Inline form */
+.inline-form {
+  display: flex;
+  gap: 8px;
+  align-items: flex-end;
+}
+.inline-form .form-group { flex: 1; margin-bottom: 0; }
+.flex-row { display: flex; gap: 8px; align-items: center; }
+.link-display {
+  padding: 8px 14px;
+  background: var(--bg);
+  border-radius: 8px;
+  font-size: 13px;
+  word-break: break-all;
+  border: 1px solid var(--border);
+}
+.link-display .type {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  margin-right: 8px;
+}
+.link-display .type.vk { background: rgba(108,92,231,0.2); color: var(--accent2); }
+.link-display .type.yandex { background: rgba(254,202,87,0.2); color: var(--yellow); }
+.mt-12 { margin-top: 12px; }
+.mb-12 { margin-bottom: 12px; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>
+    <div class="logo">V</div>
+    VKVPN Admin
+  </h1>
+
+  <!-- Status cards -->
+  <div class="cards">
+    <div class="card">
+      <h2>Server</h2>
+      <div id="server-ip" class="stat">--</div>
+      <div style="margin-top:8px">
+        <span class="badge on" id="server-badge">Online</span>
+      </div>
+    </div>
+    <div class="card">
+      <h2>Clients</h2>
+      <div id="client-count" class="stat">0 <small>connected</small></div>
+    </div>
+  </div>
+
+  <!-- Link management -->
+  <div class="card full mb-12" style="margin-bottom:16px">
+    <h2>Active Link (VK / Yandex)</h2>
+    <div id="current-link" class="link-display mb-12" style="display:none"></div>
+    <div class="inline-form">
+      <div class="form-group">
+        <label>Link</label>
+        <input type="text" id="link-input" placeholder="https://vk.com/call/join/... or https://telemost.yandex.ru/j/...">
+      </div>
+      <div class="form-group" style="flex:0 0 120px">
+        <label>Type</label>
+        <select id="link-type">
+          <option value="">Auto</option>
+          <option value="vk">VK</option>
+          <option value="yandex">Yandex</option>
+        </select>
+      </div>
+      <button class="btn btn-primary" onclick="setLink()" style="margin-bottom:0;align-self:flex-end">Save</button>
+    </div>
+  </div>
+
+  <!-- Client management -->
+  <div class="card full" style="margin-bottom:16px">
+    <h2>Clients</h2>
+    <div class="inline-form mb-12">
+      <div class="form-group">
+        <input type="text" id="new-client-name" placeholder="Client name (e.g. iPhone_Roma)">
+      </div>
+      <button class="btn btn-success" onclick="addClient()">+ Add</button>
+    </div>
+    <ul class="client-list" id="client-list">
+      <li style="color:var(--text2);padding:12px 0">Loading...</li>
+    </ul>
+  </div>
+
+  <!-- Logs -->
+  <div class="card full">
+    <h2>Logs</h2>
+    <div class="log-box" id="log-box"></div>
+  </div>
+</div>
+
+<!-- Config modal -->
+<div class="modal-overlay" id="config-modal">
+  <div class="modal">
+    <h3 id="modal-title">Client Config</h3>
+    <p style="font-size:13px;color:var(--text2);margin-bottom:12px">
+      Scan QR code in WireGuard app or download config file.
+    </p>
+    <div class="qr-container" id="qr-container"></div>
+    <textarea class="config-text" id="config-text" readonly></textarea>
+    <div class="flex-row mt-12">
+      <button class="btn btn-primary" onclick="downloadConfig()">Download .conf</button>
+      <button class="btn btn-danger" onclick="closeModal()">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- QR code library -->
+<script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.min.js"></script>
+<script>
+const API = '';
+let currentConfigName = '';
+let lastLogId = 0;
+
+function toast(msg, type='success') {
+  const t = document.createElement('div');
+  t.className = 'toast ' + type;
+  t.textContent = msg;
+  document.body.appendChild(t);
+  setTimeout(() => t.remove(), 3000);
+}
+
+async function api(path, opts) {
+  try {
+    const resp = await fetch(API + path, opts);
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || resp.statusText);
+    return data;
+  } catch(e) {
+    toast(e.message, 'error');
+    throw e;
+  }
+}
+
+async function loadStatus() {
+  try {
+    const s = await api('/api/status');
+    document.getElementById('server-ip').textContent = s.server_ip || '--';
+    document.getElementById('client-count').innerHTML = `${s.clients} <small>total</small>`;
+
+    const linkEl = document.getElementById('current-link');
+    if (s.active_link) {
+      const typeClass = s.link_type === 'vk' ? 'vk' : 'yandex';
+      const typeLabel = s.link_type === 'vk' ? 'VK' : 'Yandex';
+      linkEl.innerHTML = `<span class="type ${typeClass}">${typeLabel}</span>${s.active_link}`;
+      linkEl.style.display = 'block';
+    } else {
+      linkEl.style.display = 'none';
+    }
+  } catch(e) {}
+}
+
+async function setLink() {
+  const link = document.getElementById('link-input').value.trim();
+  if (!link) return toast('Enter a link', 'error');
+  const type = document.getElementById('link-type').value;
+  await api('/api/link', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({link, type})
+  });
+  document.getElementById('link-input').value = '';
+  toast('Link updated!');
+  loadStatus();
+}
+
+async function loadClients() {
+  try {
+    const clients = await api('/api/clients');
+    const list = document.getElementById('client-list');
+    if (!clients || clients.length === 0) {
+      list.innerHTML = '<li style="color:var(--text2);padding:12px 0">No clients yet. Add one above.</li>';
+      return;
+    }
+    list.innerHTML = clients.map(c => `
+      <li class="client-item">
+        <div class="client-info">
+          <div class="client-name">${esc(c.name)}</div>
+          <div class="client-meta">${c.ip} &middot; ${c.created_at} &middot;
+            <span class="badge ${c.enabled ? 'on' : 'off'}">${c.enabled ? 'Active' : 'Disabled'}</span>
+          </div>
+        </div>
+        <div class="client-actions">
+          <button class="btn btn-sm btn-primary" onclick="showConfig('${esc(c.name)}')">QR / Config</button>
+          <button class="btn btn-sm ${c.enabled ? 'btn-danger' : 'btn-success'}" onclick="toggleClient('${esc(c.name)}')">${c.enabled ? 'Disable' : 'Enable'}</button>
+          <button class="btn btn-sm btn-danger" onclick="deleteClient('${esc(c.name)}')">Delete</button>
+        </div>
+      </li>
+    `).join('');
+  } catch(e) {}
+}
+
+async function addClient() {
+  const name = document.getElementById('new-client-name').value.trim();
+  if (!name) return toast('Enter client name', 'error');
+  await api('/api/clients/add', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({name})
+  });
+  document.getElementById('new-client-name').value = '';
+  toast('Client added!');
+  loadClients();
+  loadStatus();
+}
+
+async function deleteClient(name) {
+  if (!confirm(`Delete client "${name}"?`)) return;
+  await api('/api/clients/delete', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({name})
+  });
+  toast('Client deleted');
+  loadClients();
+  loadStatus();
+}
+
+async function toggleClient(name) {
+  await api('/api/clients/toggle', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({name})
+  });
+  loadClients();
+}
+
+async function showConfig(name) {
+  currentConfigName = name;
+  const data = await api(`/api/clients/config?name=${encodeURIComponent(name)}`);
+  document.getElementById('modal-title').textContent = `Config: ${name}`;
+  document.getElementById('config-text').value = data.config;
+
+  // Generate QR
+  const qr = qrcode(0, 'M');
+  qr.addData(data.config);
+  qr.make();
+  document.getElementById('qr-container').innerHTML = qr.createSvgTag(4, 0);
+
+  document.getElementById('config-modal').classList.add('show');
+}
+
+function downloadConfig() {
+  const conf = document.getElementById('config-text').value;
+  const blob = new Blob([conf], {type: 'text/plain'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = currentConfigName + '.conf';
+  a.click();
+}
+
+function closeModal() {
+  document.getElementById('config-modal').classList.remove('show');
+}
+
+async function loadLogs() {
+  try {
+    const entries = await api(`/api/logs?after=${lastLogId}`);
+    if (!entries || entries.length === 0) return;
+    const box = document.getElementById('log-box');
+    entries.forEach(e => {
+      lastLogId = e.id;
+      box.innerHTML += `<div><span class="log-time">${e.time}</span> <span class="log-msg">${esc(e.message)}</span></div>`;
+    });
+    box.scrollTop = box.scrollHeight;
+  } catch(e) {}
+}
+
+function esc(s) {
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+// Init
+loadStatus();
+loadClients();
+loadLogs();
+setInterval(loadLogs, 3000);
+setInterval(loadStatus, 10000);
+
+// Enter to add client
+document.getElementById('new-client-name').addEventListener('keydown', e => {
+  if (e.key === 'Enter') addClient();
+});
+document.getElementById('link-input').addEventListener('keydown', e => {
+  if (e.key === 'Enter') setLink();
+});
+// Close modal on overlay click
+document.getElementById('config-modal').addEventListener('click', e => {
+  if (e.target === document.getElementById('config-modal')) closeModal();
+});
+</script>
+</body>
+</html>
