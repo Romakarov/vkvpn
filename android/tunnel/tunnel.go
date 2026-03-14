@@ -1,15 +1,16 @@
-// Package tunnel provides a combined WireGuard+TURN tunnel for Android.
-// It is designed to be called from Android VpnService via gomobile.
+// Package tunnel provides a WireGuard VPN tunneled through TURN servers for Android.
 //
 // Architecture:
-//   Android VpnService creates TUN fd → this library reads/writes packets →
-//   WireGuard encrypts → TURN client sends through VK/Yandex → VPS
+//   Android VpnService creates TUN fd → wireguard-go encrypts packets →
+//   DTLS+TURN tunnel forwards encrypted WG packets through VK/Yandex TURN → VPS
 package tunnel
 
 import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -28,6 +29,9 @@ import (
 	"github.com/pion/dtls/v3/pkg/crypto/selfsign"
 	"github.com/pion/logging"
 	"github.com/pion/turn/v5"
+	"golang.zx2c4.com/wireguard/conn"
+	"golang.zx2c4.com/wireguard/device"
+	"golang.zx2c4.com/wireguard/tun"
 )
 
 // State holds the running tunnel state
@@ -37,6 +41,7 @@ var (
 	tunnelMu     sync.Mutex
 	running      bool
 	logCallback  func(string)
+	wgDevice     *device.Device
 )
 
 // SetLogCallback sets a callback for log messages (called from Android)
@@ -52,14 +57,72 @@ func logMsg(format string, args ...interface{}) {
 	}
 }
 
+// ─── Android TUN device for wireguard-go ───
+
+type androidTUN struct {
+	file      *os.File
+	mtu       int
+	events    chan tun.Event
+	closeOnce sync.Once
+}
+
+func newAndroidTUN(fd int, mtu int) *androidTUN {
+	t := &androidTUN{
+		file:   os.NewFile(uintptr(fd), "/dev/tun"),
+		mtu:    mtu,
+		events: make(chan tun.Event, 1),
+	}
+	t.events <- tun.EventUp
+	return t
+}
+
+func (t *androidTUN) File() *os.File            { return t.file }
+func (t *androidTUN) Name() (string, error)     { return "tun0", nil }
+func (t *androidTUN) MTU() (int, error)         { return t.mtu, nil }
+func (t *androidTUN) Events() <-chan tun.Event   { return t.events }
+func (t *androidTUN) BatchSize() int             { return 1 }
+
+func (t *androidTUN) Read(bufs [][]byte, sizes []int, offset int) (int, error) {
+	n, err := t.file.Read(bufs[0][offset:])
+	if err != nil {
+		return 0, err
+	}
+	sizes[0] = n
+	return 1, nil
+}
+
+func (t *androidTUN) Write(bufs [][]byte, offset int) (int, error) {
+	for i, buf := range bufs {
+		if offset <= len(buf) {
+			_, err := t.file.Write(buf[offset:])
+			if err != nil {
+				return i, err
+			}
+		}
+	}
+	return len(bufs), nil
+}
+
+func (t *androidTUN) Close() error {
+	var err error
+	t.closeOnce.Do(func() {
+		close(t.events)
+		err = t.file.Close()
+	})
+	return err
+}
+
+// ─── Public API ───
+
 // Start starts the tunnel.
-// tunFd: file descriptor from Android VpnService
-// peerAddr: VPS address "host:port" (e.g. "144.124.247.27:56000")
+// tunFd: TUN file descriptor from Android VpnService (via detachFd)
+// peerAddr: VPS DTLS address "host:port" (e.g. "1.2.3.4:56000")
 // vkLink: VK call invite link (or empty)
 // yandexLink: Yandex Telemost link (or empty)
 // connections: number of parallel TURN connections (0 = auto)
-// localWgPort: local WireGuard UDP port to listen on (e.g. 9000)
-func Start(peerAddr, vkLink, yandexLink string, connections int, localWgPort int) error {
+// wgPrivKey: WireGuard client private key (base64)
+// serverPubKey: WireGuard server public key (base64)
+func Start(tunFd int, peerAddr, vkLink, yandexLink string, connections int, wgPrivKey, serverPubKey string) error {
 	tunnelMu.Lock()
 	if running {
 		tunnelMu.Unlock()
@@ -73,10 +136,23 @@ func Start(peerAddr, vkLink, yandexLink string, connections int, localWgPort int
 	if vkLink == "" && yandexLink == "" {
 		return fmt.Errorf("VK or Yandex link required")
 	}
+	if wgPrivKey == "" || serverPubKey == "" {
+		return fmt.Errorf("WireGuard keys required")
+	}
 
 	peer, err := net.ResolveUDPAddr("udp", peerAddr)
 	if err != nil {
 		return fmt.Errorf("invalid peer: %s", err)
+	}
+
+	// Decode WG keys from base64 to hex (wireguard-go IPC format)
+	privBytes, err := base64.StdEncoding.DecodeString(wgPrivKey)
+	if err != nil || len(privBytes) != 32 {
+		return fmt.Errorf("invalid WG private key")
+	}
+	pubBytes, err := base64.StdEncoding.DecodeString(serverPubKey)
+	if err != nil || len(pubBytes) != 32 {
+		return fmt.Errorf("invalid WG public key")
 	}
 
 	var link string
@@ -102,27 +178,54 @@ func Start(peerAddr, vkLink, yandexLink string, connections int, localWgPort int
 
 	ctx, cancel := context.WithCancel(context.Background())
 
-	listenAddr := fmt.Sprintf("127.0.0.1:%d", localWgPort)
-	listenConn, err := net.ListenPacket("udp", listenAddr)
+	// Internal UDP listener: wireguard-go sends encrypted packets here,
+	// DTLS+TURN tunnel picks them up and forwards to server
+	listenConn, err := net.ListenPacket("udp", "127.0.0.1:0")
 	if err != nil {
 		cancel()
-		return fmt.Errorf("listen %s: %s", listenAddr, err)
+		return fmt.Errorf("listen: %s", err)
 	}
+	internalPort := listenConn.LocalAddr().(*net.UDPAddr).Port
 	context.AfterFunc(ctx, func() { listenConn.Close() })
+
+	// Create wireguard-go device with Android TUN fd
+	tunDev := newAndroidTUN(tunFd, 1280)
+	wgBind := conn.NewDefaultBind()
+	wgLogger := device.NewLogger(device.LogLevelError, "wg: ")
+	dev := device.NewDevice(tunDev, wgBind, wgLogger)
+
+	ipcConfig := fmt.Sprintf(
+		"private_key=%s\npublic_key=%s\nendpoint=127.0.0.1:%d\nallowed_ip=0.0.0.0/0\npersistent_keepalive_interval=25\n",
+		hex.EncodeToString(privBytes),
+		hex.EncodeToString(pubBytes),
+		internalPort,
+	)
+	if err := dev.IpcSet(ipcConfig); err != nil {
+		cancel()
+		dev.Close()
+		return fmt.Errorf("WireGuard config: %s", err)
+	}
+	if err := dev.Up(); err != nil {
+		cancel()
+		dev.Close()
+		return fmt.Errorf("WireGuard up: %s", err)
+	}
 
 	tunnelMu.Lock()
 	running = true
 	tunnelCtx = ctx
 	tunnelCancel = cancel
+	wgDevice = dev
 	tunnelMu.Unlock()
 
-	logMsg("Tunnel starting: peer=%s connections=%d listen=%s", peerAddr, connections, listenAddr)
+	logMsg("Tunnel starting: peer=%s connections=%d wg_internal_port=%d", peerAddr, connections, internalPort)
 
 	params := &turnParams{
 		link:     link,
 		getCreds: getCreds,
 	}
 
+	// Feed listenConn to DTLS connection loops
 	listenConnChan := make(chan net.PacketConn)
 	go func() {
 		for {
@@ -134,6 +237,7 @@ func Start(peerAddr, vkLink, yandexLink string, connections int, localWgPort int
 		}
 	}()
 
+	// Start DTLS+TURN connection goroutines
 	go func() {
 		var wg sync.WaitGroup
 		t := time.Tick(100 * time.Millisecond)
@@ -171,8 +275,10 @@ func Start(peerAddr, vkLink, yandexLink string, connections int, localWgPort int
 		}
 
 		wg.Wait()
+		dev.Close()
 		tunnelMu.Lock()
 		running = false
+		wgDevice = nil
 		tunnelMu.Unlock()
 		logMsg("Tunnel stopped")
 	}()
@@ -187,6 +293,10 @@ func Stop() {
 	if running && tunnelCancel != nil {
 		tunnelCancel()
 	}
+	if wgDevice != nil {
+		wgDevice.Close()
+		wgDevice = nil
+	}
 }
 
 // IsRunning returns true if tunnel is active
@@ -194,11 +304,6 @@ func IsRunning() bool {
 	tunnelMu.Lock()
 	defer tunnelMu.Unlock()
 	return running
-}
-
-// GetLocalEndpoint returns the local WireGuard endpoint
-func GetLocalEndpoint(port int) string {
-	return fmt.Sprintf("127.0.0.1:%d", port)
 }
 
 // ─── Packet pipe (inline, no external dep) ───
@@ -398,13 +503,13 @@ func getYandexCreds(link string) (string, string, string, error) {
 	h := http.Header{}
 	h.Set("Origin", "https://telemost.yandex.ru")
 	h.Set("User-Agent", userAgent)
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	conn, _, err := (&websocket.Dialer{}).DialContext(ctx, cr.CC.MSURL, h)
+	wsCtx, wsCancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer wsCancel()
+	wsConn, _, err := (&websocket.Dialer{}).DialContext(wsCtx, cr.CC.MSURL, h)
 	if err != nil {
 		return "", "", "", err
 	}
-	defer conn.Close()
+	defer wsConn.Close()
 
 	hello := map[string]interface{}{
 		"uid": uuid.New().String(),
@@ -422,8 +527,8 @@ func getYandexCreds(link string) (string, string, string, error) {
 			},
 		},
 	}
-	conn.WriteJSON(hello)
-	conn.SetReadDeadline(time.Now().Add(15 * time.Second))
+	wsConn.WriteJSON(hello)
+	wsConn.SetReadDeadline(time.Now().Add(15 * time.Second))
 
 	type IceServer struct {
 		Urls       []string `json:"urls"`
@@ -439,7 +544,7 @@ func getYandexCreds(link string) (string, string, string, error) {
 	}
 
 	for {
-		_, msg, err := conn.ReadMessage()
+		_, msg, err := wsConn.ReadMessage()
 		if err != nil {
 			return "", "", "", err
 		}
@@ -471,7 +576,7 @@ type connectedUDPConn struct{ *net.UDPConn }
 
 func (c *connectedUDPConn) WriteTo(p []byte, _ net.Addr) (int, error) { return c.Write(p) }
 
-func dtlsFunc(ctx context.Context, conn net.PacketConn, peer *net.UDPAddr) (net.Conn, error) {
+func dtlsFunc(ctx context.Context, pktConn net.PacketConn, peer *net.UDPAddr) (net.Conn, error) {
 	cert, err := selfsign.GenerateSelfSigned()
 	if err != nil {
 		return nil, err
@@ -485,7 +590,7 @@ func dtlsFunc(ctx context.Context, conn net.PacketConn, peer *net.UDPAddr) (net.
 	}
 	ctx1, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	dtlsConn, err := dtls.Client(conn, peer, cfg)
+	dtlsConn, err := dtls.Client(pktConn, peer, cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -646,7 +751,7 @@ func oneTurnConnection(ctx context.Context, params *turnParams, peer *net.UDPAdd
 		relay.SetDeadline(time.Now())
 		conn2.SetDeadline(time.Now())
 	})
-	var addr atomic.Value
+	var relayAddr atomic.Value
 	go func() {
 		defer wg.Done()
 		defer tcancel()
@@ -661,7 +766,7 @@ func oneTurnConnection(ctx context.Context, params *turnParams, peer *net.UDPAdd
 			if e != nil {
 				return
 			}
-			addr.Store(a)
+			relayAddr.Store(a)
 			if _, e = relay.WriteTo(buf[:n], peer); e != nil {
 				return
 			}
@@ -681,7 +786,7 @@ func oneTurnConnection(ctx context.Context, params *turnParams, peer *net.UDPAdd
 			if e != nil {
 				return
 			}
-			a, ok := addr.Load().(net.Addr)
+			a, ok := relayAddr.Load().(net.Addr)
 			if !ok {
 				return
 			}
@@ -726,6 +831,3 @@ func oneTurnConnectionLoop(ctx context.Context, params *turnParams, peer *net.UD
 		}
 	}
 }
-
-// Ensure we don't import os for Android compatibility
-var _ = os.Stderr
