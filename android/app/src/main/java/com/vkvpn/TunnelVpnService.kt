@@ -67,13 +67,10 @@ class TunnelVpnService : VpnService() {
                 val vkLink = if (provider == "vk") link else ""
                 val yaLink = if (provider == "yandex") link else ""
 
-                Tunnel.setLogCallback { msg -> Log.d(TAG, msg) }
+                // Note: setLogCallback not available via gomobile (can't export func(string))
+                // Tunnel logs go to stdout/logcat via Go's log package
 
-                val err = Tunnel.start(server, vkLink, yaLink, 0, WG_LOCAL_PORT)
-                if (err != null) {
-                    Log.e(TAG, "Tunnel start error: $err")
-                    return@Thread
-                }
+                Tunnel.start(server, vkLink, yaLink, 0L, WG_LOCAL_PORT.toLong())
 
                 // 2. Create VPN interface (TUN device)
                 val builder = Builder()
