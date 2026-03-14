@@ -344,8 +344,6 @@ function toast(msg, type='success') {
 
 async function api(path, opts) {
   try {
-    opts = opts || {};
-    opts.credentials = 'include';
     const resp = await fetch(API + path, opts);
     const data = await resp.json();
     if (!resp.ok) throw new Error(data.error || resp.statusText);
