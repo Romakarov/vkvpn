@@ -10,3 +10,5 @@ vendor/
 *.apk
 *.aar
 android/app/libs/
+android/gradle/wrapper/gradle-wrapper.jar
+android/gradlew
