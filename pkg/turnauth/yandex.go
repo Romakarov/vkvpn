@@ -13,6 +13,9 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+// yandexConfBaseURL is the base URL for the Yandex conference API. Overridable for testing.
+var yandexConfBaseURL = "https://cloud-api.yandex.ru"
+
 // GetYandexCredentials extracts TURN credentials from a Yandex Telemost link.
 // The link should be the conference ID or full URL.
 func GetYandexCredentials(link string) (*Credentials, error) {
@@ -25,7 +28,6 @@ func GetYandexCredentials(link string) (*Credentials, error) {
 		link = link[:idx]
 	}
 
-	const telemostConfHost = "cloud-api.yandex.ru"
 	telemostConfPath := fmt.Sprintf("/telemost_front/v2/telemost/conferences/https%%3A%%2F%%2Ftelemost.yandex.ru%%2Fj%%2F%s/connection?next_gen_media_platform_allowed=false", link)
 	const userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:144.0) Gecko/20100101 Firefox/144.0"
 
@@ -39,7 +41,7 @@ func GetYandexCredentials(link string) (*Credentials, error) {
 		Credentials string `json:"credentials"`
 	}
 
-	endpoint := "https://" + telemostConfHost + telemostConfPath
+	endpoint := yandexConfBaseURL + telemostConfPath
 	client := &http.Client{
 		Timeout: 20 * time.Second,
 		Transport: &http.Transport{

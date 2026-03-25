@@ -12,6 +12,17 @@ import (
 	"github.com/google/uuid"
 )
 
+// vkBaseURLs holds the base URLs for VK API calls. Overridable for testing.
+var vkBaseURLs = struct {
+	LoginVK string
+	ApiVK   string
+	OkCDN   string
+}{
+	LoginVK: "https://login.vk.ru",
+	ApiVK:   "https://api.vk.ru",
+	OkCDN:   "https://calls.okcdn.ru",
+}
+
 // GetVKCredentials extracts TURN credentials from a VK Calls join link.
 // The link should be the join hash (e.g. "ABC123") or full URL.
 func GetVKCredentials(link string) (*Credentials, error) {
@@ -75,7 +86,7 @@ func GetVKCredentials(link string) (*Credentials, error) {
 
 	// Step 1: Get anonymous token
 	data := "client_secret=QbYic1K3lEV5kTGiqlq2&client_id=6287487&scopes=audio_anonymous%2Cvideo_anonymous%2Cphotos_anonymous%2Cprofile_anonymous&isApiOauthAnonymEnabled=false&version=1&app_id=6287487"
-	resp, err := doRequest(data, "https://login.vk.ru/?act=get_anonym_token")
+	resp, err := doRequest(data, vkBaseURLs.LoginVK+"/?act=get_anonym_token")
 	if err != nil {
 		return nil, fmt.Errorf("step 1: %w", err)
 	}
@@ -86,7 +97,7 @@ func GetVKCredentials(link string) (*Credentials, error) {
 
 	// Step 2: Get anonymous access token payload
 	data = fmt.Sprintf("access_token=%s", token1)
-	resp, err = doRequest(data, "https://api.vk.ru/method/calls.getAnonymousAccessTokenPayload?v=5.264&client_id=6287487")
+	resp, err = doRequest(data, vkBaseURLs.ApiVK+"/method/calls.getAnonymousAccessTokenPayload?v=5.264&client_id=6287487")
 	if err != nil {
 		return nil, fmt.Errorf("step 2: %w", err)
 	}
@@ -97,7 +108,7 @@ func GetVKCredentials(link string) (*Credentials, error) {
 
 	// Step 3: Get messages token
 	data = fmt.Sprintf("client_id=6287487&token_type=messages&payload=%s&client_secret=QbYic1K3lEV5kTGiqlq2&version=1&app_id=6287487", token2)
-	resp, err = doRequest(data, "https://login.vk.ru/?act=get_anonym_token")
+	resp, err = doRequest(data, vkBaseURLs.LoginVK+"/?act=get_anonym_token")
 	if err != nil {
 		return nil, fmt.Errorf("step 3: %w", err)
 	}
@@ -108,7 +119,7 @@ func GetVKCredentials(link string) (*Credentials, error) {
 
 	// Step 4: Get anonymous call token
 	data = fmt.Sprintf("vk_join_link=https://vk.ru/call/join/%s&name=123&access_token=%s", link, token3)
-	resp, err = doRequest(data, "https://api.vk.ru/method/calls.getAnonymousToken?v=5.264")
+	resp, err = doRequest(data, vkBaseURLs.ApiVK+"/method/calls.getAnonymousToken?v=5.264")
 	if err != nil {
 		return nil, fmt.Errorf("step 4: %w", err)
 	}
@@ -119,7 +130,7 @@ func GetVKCredentials(link string) (*Credentials, error) {
 
 	// Step 5: OK.ru anonymous login
 	data = fmt.Sprintf("%s%s%s", "session_data=%7B%22version%22%3A2%2C%22device_id%22%3A%22", uuid.New(), "%22%2C%22client_version%22%3A1.1%2C%22client_type%22%3A%22SDK_JS%22%7D&method=auth.anonymLogin&format=JSON&application_key=CGMMEJLGDIHBABABA")
-	resp, err = doRequest(data, "https://calls.okcdn.ru/fb.do")
+	resp, err = doRequest(data, vkBaseURLs.OkCDN+"/fb.do")
 	if err != nil {
 		return nil, fmt.Errorf("step 5: %w", err)
 	}
@@ -130,7 +141,7 @@ func GetVKCredentials(link string) (*Credentials, error) {
 
 	// Step 6: Join conversation and get TURN credentials
 	data = fmt.Sprintf("joinLink=%s&isVideo=false&protocolVersion=5&anonymToken=%s&method=vchat.joinConversationByLink&format=JSON&application_key=CGMMEJLGDIHBABABA&session_key=%s", link, token4, token5)
-	resp, err = doRequest(data, "https://calls.okcdn.ru/fb.do")
+	resp, err = doRequest(data, vkBaseURLs.OkCDN+"/fb.do")
 	if err != nil {
 		return nil, fmt.Errorf("step 6: %w", err)
 	}
