@@ -811,7 +811,20 @@ func oneTurnConnection(ctx context.Context, params *turnParams, peer *net.UDPAdd
 	wg.Wait()
 }
 
+func backoffSleep(ctx context.Context, attempt int) {
+	delay := time.Duration(1<<uint(attempt)) * time.Second
+	if delay > 30*time.Second {
+		delay = 30 * time.Second
+	}
+	logMsg("Reconnecting in %v (attempt %d)...", delay, attempt+1)
+	select {
+	case <-time.After(delay):
+	case <-ctx.Done():
+	}
+}
+
 func oneDtlsConnectionLoop(ctx context.Context, peer *net.UDPAddr, lch <-chan net.PacketConn, cch chan<- net.PacketConn, okchan chan<- struct{}) {
+	attempt := 0
 	for {
 		select {
 		case <-ctx.Done():
@@ -820,13 +833,18 @@ func oneDtlsConnectionLoop(ctx context.Context, peer *net.UDPAddr, lch <-chan ne
 			c := make(chan error)
 			go oneDtlsConnection(ctx, peer, lc, cch, okchan, c)
 			if err := <-c; err != nil {
-				logMsg("%s", err)
+				logMsg("DTLS error: %s", err)
+				backoffSleep(ctx, attempt)
+				attempt++
+			} else {
+				attempt = 0
 			}
 		}
 	}
 }
 
 func oneTurnConnectionLoop(ctx context.Context, params *turnParams, peer *net.UDPAddr, cch <-chan net.PacketConn, t <-chan time.Time) {
+	attempt := 0
 	for {
 		select {
 		case <-ctx.Done():
@@ -841,7 +859,11 @@ func oneTurnConnectionLoop(ctx context.Context, params *turnParams, peer *net.UD
 			c := make(chan error)
 			go oneTurnConnection(ctx, params, peer, c2, c)
 			if err := <-c; err != nil {
-				logMsg("%s", err)
+				logMsg("TURN error: %s", err)
+				backoffSleep(ctx, attempt)
+				attempt++
+			} else {
+				attempt = 0
 			}
 		}
 	}

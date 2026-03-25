@@ -7,6 +7,8 @@ import (
 	"embed"
 	"encoding/base64"
 	"encoding/json"
+
+	"golang.org/x/crypto/curve25519"
 	"flag"
 	"fmt"
 	"io"
@@ -86,19 +88,21 @@ func (c *Config) Save() error {
 // ─── WireGuard management ───
 
 func wgGenKey() (priv, pub string, err error) {
-	out, err := exec.Command("wg", "genkey").Output()
-	if err != nil {
-		return "", "", fmt.Errorf("wg genkey: %w", err)
+	var key [32]byte
+	if _, err := rand.Read(key[:]); err != nil {
+		return "", "", fmt.Errorf("generate key: %w", err)
 	}
-	priv = strings.TrimSpace(string(out))
+	// Clamp private key per Curve25519 spec
+	key[0] &= 248
+	key[31] &= 127
+	key[31] |= 64
+	priv = base64.StdEncoding.EncodeToString(key[:])
 
-	cmd := exec.Command("wg", "pubkey")
-	cmd.Stdin = strings.NewReader(priv)
-	out, err = cmd.Output()
+	pubKey, err := curve25519.X25519(key[:], curve25519.Basepoint)
 	if err != nil {
-		return "", "", fmt.Errorf("wg pubkey: %w", err)
+		return "", "", fmt.Errorf("derive pubkey: %w", err)
 	}
-	pub = strings.TrimSpace(string(out))
+	pub = base64.StdEncoding.EncodeToString(pubKey)
 	return priv, pub, nil
 }
 
@@ -789,10 +793,17 @@ func main() {
 	signal.Notify(signalChan, syscall.SIGTERM, syscall.SIGINT)
 	go func() {
 		<-signalChan
-		logger.Printf("Terminating...")
+		logger.Printf("Shutting down gracefully...")
+		if cfg != nil {
+			if err := cfg.Save(); err != nil {
+				logger.Printf("Warning: failed to save config on shutdown: %s", err)
+			} else {
+				logger.Printf("Config saved")
+			}
+		}
 		cancel()
 		<-signalChan
-		logger.Fatalf("Exit...")
+		logger.Fatalf("Forced exit...")
 	}()
 
 	// Start DTLS server
