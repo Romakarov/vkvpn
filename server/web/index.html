@@ -253,11 +253,11 @@ input:focus, select:focus { border-color: var(--accent); }
 
   <!-- Link management -->
   <div class="card full mb-12" style="margin-bottom:16px">
-    <h2>Active Link (VK / Yandex)</h2>
-    <div id="current-link" class="link-display mb-12" style="display:none"></div>
+    <h2>TURN Links</h2>
+    <div id="links-list" style="margin-bottom:12px"></div>
     <div class="inline-form">
       <div class="form-group">
-        <label>Link</label>
+        <label>New Link</label>
         <input type="text" id="link-input" placeholder="https://vk.com/call/join/... or https://telemost.yandex.ru/j/...">
       </div>
       <div class="form-group" style="flex:0 0 120px">
@@ -268,7 +268,7 @@ input:focus, select:focus { border-color: var(--accent); }
           <option value="yandex">Yandex</option>
         </select>
       </div>
-      <button class="btn btn-primary" onclick="setLink()" style="margin-bottom:0;align-self:flex-end">Save</button>
+      <button class="btn btn-primary" onclick="setLink()" style="margin-bottom:0;align-self:flex-end">Add</button>
     </div>
   </div>
 
@@ -354,21 +354,57 @@ async function api(path, opts) {
   }
 }
 
+let metricsData = {};
+
+function linkAge(addedAt) {
+  if (!addedAt) return '';
+  const diff = Date.now() - new Date(addedAt).getTime();
+  const mins = Math.floor(diff / 60000);
+  if (mins < 60) return `${mins} min`;
+  const hrs = Math.floor(mins / 60);
+  return `${hrs}h ${mins % 60}m`;
+}
+
+function linkAgeClass(addedAt) {
+  if (!addedAt) return '';
+  const mins = (Date.now() - new Date(addedAt).getTime()) / 60000;
+  if (mins > 120) return 'color:var(--red)';
+  if (mins > 60) return 'color:var(--yellow)';
+  return 'color:var(--green)';
+}
+
 async function loadStatus() {
   try {
     const s = await api('/api/status');
     document.getElementById('server-ip').textContent = s.server_ip || '--';
     document.getElementById('client-count').innerHTML = `${s.clients} <small>total</small>`;
+  } catch(e) {}
+}
 
-    const linkEl = document.getElementById('current-link');
-    if (s.active_link) {
-      const typeClass = s.link_type === 'vk' ? 'vk' : 'yandex';
-      const typeLabel = s.link_type === 'vk' ? 'VK' : 'Yandex';
-      linkEl.innerHTML = `<span class="type ${typeClass}">${typeLabel}</span>${s.active_link}`;
-      linkEl.style.display = 'block';
-    } else {
-      linkEl.style.display = 'none';
+async function loadLinks() {
+  try {
+    const data = await api('/api/link/active');
+    const list = document.getElementById('links-list');
+    const links = data.links || [];
+    if (links.length === 0) {
+      list.innerHTML = '<div style="color:var(--text2);padding:8px 0">No links. Add one below.</div>';
+      return;
     }
+    list.innerHTML = links.map(l => {
+      const typeClass = l.type === 'vk' ? 'vk' : 'yandex';
+      const typeLabel = l.type === 'vk' ? 'VK' : 'Yandex';
+      const age = linkAge(l.added_at);
+      const ageStyle = linkAgeClass(l.added_at);
+      const activeIcon = l.active ? '&#9679;' : '&#9675;';
+      const activeColor = l.active ? 'var(--green)' : 'var(--text2)';
+      return `<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--border)">
+        <span style="color:${activeColor}">${activeIcon}</span>
+        <span class="type ${typeClass}" style="font-size:11px;padding:2px 6px">${typeLabel}</span>
+        <span style="flex:1;font-size:13px;word-break:break-all">${esc(l.url)}</span>
+        <span style="font-size:12px;${ageStyle}">${age}</span>
+        <button class="btn btn-sm btn-danger" onclick="deleteLink('${esc(l.url)}')" style="padding:2px 8px;font-size:11px">&times;</button>
+      </div>`;
+    }).join('');
   } catch(e) {}
 }
 
@@ -382,8 +418,39 @@ async function setLink() {
     body: JSON.stringify({link, type})
   });
   document.getElementById('link-input').value = '';
-  toast('Link updated!');
+  toast('Link added!');
   loadStatus();
+  loadLinks();
+}
+
+async function deleteLink(url) {
+  await api('/api/link/delete', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({url})
+  });
+  toast('Link removed');
+  loadStatus();
+  loadLinks();
+}
+
+async function loadMetrics() {
+  try {
+    const data = await api('/api/metrics');
+    metricsData = {};
+    if (data.clients) {
+      data.clients.forEach(c => { metricsData[c.name] = c; });
+    }
+    loadClients();
+  } catch(e) {}
+}
+
+function formatBytes(b) {
+  if (!b || b === 0) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB'];
+  let i = 0;
+  while (b >= 1024 && i < units.length - 1) { b /= 1024; i++; }
+  return b.toFixed(i > 0 ? 1 : 0) + ' ' + units[i];
 }
 
 async function loadClients() {
@@ -394,12 +461,16 @@ async function loadClients() {
       list.innerHTML = '<li style="color:var(--text2);padding:12px 0">No clients yet. Add one above.</li>';
       return;
     }
-    list.innerHTML = clients.map(c => `
+    list.innerHTML = clients.map(c => {
+      const m = metricsData[c.name] || {};
+      const onlineDot = m.online ? '<span style="color:var(--green)">&#9679;</span>' : '<span style="color:var(--text2)">&#9675;</span>';
+      const traffic = (m.rx_bytes || m.tx_bytes) ? ` &middot; &#8595;${formatBytes(m.rx_bytes)} &#8593;${formatBytes(m.tx_bytes)}` : '';
+      return `
       <li class="client-item">
         <div class="client-info">
-          <div class="client-name">${esc(c.name)}</div>
+          <div class="client-name">${onlineDot} ${esc(c.name)}</div>
           <div class="client-meta">${c.ip} &middot; ${c.created_at} &middot;
-            <span class="badge ${c.enabled ? 'on' : 'off'}">${c.enabled ? 'Active' : 'Disabled'}</span>
+            <span class="badge ${c.enabled ? 'on' : 'off'}">${c.enabled ? 'Active' : 'Disabled'}</span>${traffic}
           </div>
         </div>
         <div class="client-actions">
@@ -407,8 +478,8 @@ async function loadClients() {
           <button class="btn btn-sm ${c.enabled ? 'btn-danger' : 'btn-success'}" onclick="toggleClient('${esc(c.name)}')">${c.enabled ? 'Disable' : 'Enable'}</button>
           <button class="btn btn-sm btn-danger" onclick="deleteClient('${esc(c.name)}')">Delete</button>
         </div>
-      </li>
-    `).join('');
+      </li>`;
+    }).join('');
   } catch(e) {}
 }
 
@@ -526,10 +597,14 @@ function esc(s) {
 
 // Init
 loadStatus();
+loadLinks();
 loadClients();
+loadMetrics();
 loadLogs();
 setInterval(loadLogs, 3000);
 setInterval(loadStatus, 10000);
+setInterval(loadLinks, 15000);
+setInterval(loadMetrics, 15000);
 
 // Enter to add client
 document.getElementById('new-client-name').addEventListener('keydown', e => {
