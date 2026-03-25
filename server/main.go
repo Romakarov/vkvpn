@@ -32,7 +32,9 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"strconv"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -56,7 +58,8 @@ type Config struct {
 	DNS         string   `json:"dns"`
 	ActiveLink  string   `json:"active_link"`
 	LinkType    string   `json:"link_type"`
-	Clients     []Client `json:"clients"`
+	Clients     []Client    `json:"clients"`
+	Links       []LinkEntry `json:"links,omitempty"`
 	DTLSPort      int      `json:"dtls_port"`
 	AdminPass     string   `json:"admin_pass,omitempty"`     // legacy plaintext, migrated on startup
 	AdminPassHash string   `json:"admin_pass_hash,omitempty"` // bcrypt hash
@@ -69,6 +72,13 @@ type Client struct {
 	IP         string `json:"ip"`
 	CreatedAt  string `json:"created_at"`
 	Enabled    bool   `json:"enabled"`
+}
+
+type LinkEntry struct {
+	URL     string `json:"url"`
+	Type    string `json:"type"`    // "vk" or "yandex"
+	AddedAt string `json:"added_at"` // RFC3339
+	Active  bool   `json:"active"`
 }
 
 func loadConfig(path string) (*Config, error) {
@@ -93,6 +103,23 @@ func (c *Config) Save() error {
 	data, err := json.MarshalIndent(c, "", "  ")
 	if err != nil {
 		return err
+	}
+	// Backup existing config before overwriting
+	if _, err := os.Stat(c.path); err == nil {
+		backupDir := filepath.Join(filepath.Dir(c.path), "backups")
+		os.MkdirAll(backupDir, 0700)
+		ts := time.Now().Format("20060102-150405")
+		backupPath := filepath.Join(backupDir, fmt.Sprintf("config-%s.json", ts))
+		if old, err := os.ReadFile(c.path); err == nil {
+			os.WriteFile(backupPath, old, 0600)
+		}
+		// Rotate: keep last 10 backups
+		entries, _ := os.ReadDir(backupDir)
+		if len(entries) > 10 {
+			for _, e := range entries[:len(entries)-10] {
+				os.Remove(filepath.Join(backupDir, e.Name()))
+			}
+		}
 	}
 	return os.WriteFile(c.path, data, 0600)
 }
@@ -336,6 +363,59 @@ func loadOrGenerateDTLSCert(certPath, keyPath string) (tls.Certificate, error) {
 	}, nil
 }
 
+func loadOrGenerateWebCert(certPath, keyPath string) (tls.Certificate, error) {
+	// Try to load existing cert
+	if _, err := os.Stat(certPath); err == nil {
+		cert, err := tls.LoadX509KeyPair(certPath, keyPath)
+		if err == nil {
+			logger.Printf("Loaded web TLS certificate from %s", certPath)
+			return cert, nil
+		}
+		logger.Printf("Warning: failed to load existing web cert, regenerating: %s", err)
+	}
+
+	// Generate new self-signed cert for web
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return tls.Certificate{}, fmt.Errorf("generate key: %w", err)
+	}
+
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(2),
+		Subject:      pkix.Name{CommonName: "vkvpn-admin"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(10 * 365 * 24 * time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}
+
+	certDER, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		return tls.Certificate{}, fmt.Errorf("create cert: %w", err)
+	}
+
+	os.MkdirAll(filepath.Dir(certPath), 0700)
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
+	if err := os.WriteFile(certPath, certPEM, 0600); err != nil {
+		return tls.Certificate{}, fmt.Errorf("write cert: %w", err)
+	}
+
+	keyDER, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		return tls.Certificate{}, fmt.Errorf("marshal key: %w", err)
+	}
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
+	if err := os.WriteFile(keyPath, keyPEM, 0600); err != nil {
+		return tls.Certificate{}, fmt.Errorf("write key: %w", err)
+	}
+
+	logger.Printf("Generated new web TLS certificate at %s", certPath)
+	return tls.Certificate{
+		Certificate: [][]byte{certDER},
+		PrivateKey:  key,
+	}, nil
+}
+
 // ─── DTLS Server ───
 
 func runDTLSServer(ctx context.Context, listenAddr string, connectAddr string) {
@@ -392,6 +472,8 @@ func runDTLSServer(ctx context.Context, listenAddr string, connectAddr string) {
 		go func(conn net.Conn) {
 			defer wg.Done()
 			defer conn.Close()
+			activeDTLSConns.Add(1)
+			defer activeDTLSConns.Add(-1)
 			logger.Printf("DTLS connection from %s", conn.RemoteAddr())
 
 			ctx1, cancel1 := context.WithTimeout(ctx, 30*time.Second)
@@ -501,6 +583,64 @@ func (c *Config) checkPassword(password string) bool {
 
 var clientNameRe = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,64}$`)
 
+// ─── Rate limiting ───
+
+type rateLimiter struct {
+	mu       sync.Mutex
+	failures map[string]*failEntry
+}
+
+type failEntry struct {
+	count    int
+	resetAt  time.Time
+}
+
+var authLimiter = &rateLimiter{failures: make(map[string]*failEntry)}
+
+const (
+	rateLimitWindow  = time.Minute
+	rateLimitMaxFail = 10
+)
+
+func (rl *rateLimiter) isLimited(ip string) bool {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+	e, ok := rl.failures[ip]
+	if !ok {
+		return false
+	}
+	if time.Now().After(e.resetAt) {
+		delete(rl.failures, ip)
+		return false
+	}
+	return e.count >= rateLimitMaxFail
+}
+
+func (rl *rateLimiter) recordFailure(ip string) {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+	e, ok := rl.failures[ip]
+	if !ok || time.Now().After(e.resetAt) {
+		rl.failures[ip] = &failEntry{count: 1, resetAt: time.Now().Add(rateLimitWindow)}
+		return
+	}
+	e.count++
+}
+
+func (rl *rateLimiter) reset(ip string) {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+	delete(rl.failures, ip)
+}
+
+func clientIP(r *http.Request) string {
+	if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
+		return strings.SplitN(fwd, ",", 2)[0]
+	}
+	host, _, _ := net.SplitHostPort(r.RemoteAddr)
+	return host
+}
+
 func authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		cfg.mu.RLock()
@@ -512,19 +652,28 @@ func authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 
+		ip := clientIP(r)
+		if authLimiter.isLimited(ip) {
+			http.Error(w, "too many requests", http.StatusTooManyRequests)
+			return
+		}
+
 		// Check cookie
 		cookie, err := r.Cookie("admin_token")
 		if err == nil && cfg.checkPassword(cookie.Value) {
+			authLimiter.reset(ip)
 			next(w, r)
 			return
 		}
 		// Check header
 		if h := r.Header.Get("X-Admin-Token"); h != "" && cfg.checkPassword(h) {
+			authLimiter.reset(ip)
 			next(w, r)
 			return
 		}
 		// Check query param (for initial login)
 		if tok := r.URL.Query().Get("token"); tok != "" && cfg.checkPassword(tok) {
+			authLimiter.reset(ip)
 			http.SetCookie(w, &http.Cookie{
 				Name:     "admin_token",
 				Value:    tok,
@@ -536,6 +685,7 @@ func authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 
+		authLimiter.recordFailure(ip)
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 	}
 }
@@ -557,6 +707,16 @@ func apiGetStatus(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(resp)
 }
 
+func detectLinkType(link string) string {
+	if strings.Contains(link, "vk.com") || strings.Contains(link, "vk.ru") {
+		return "vk"
+	}
+	if strings.Contains(link, "telemost") || strings.Contains(link, "yandex") {
+		return "yandex"
+	}
+	return ""
+}
+
 func apiSetLink(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "POST only", http.StatusMethodNotAllowed)
@@ -572,25 +732,96 @@ func apiSetLink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.Type == "" {
-		if strings.Contains(req.Link, "vk.com") || strings.Contains(req.Link, "vk.ru") {
-			req.Type = "vk"
-		} else if strings.Contains(req.Link, "telemost") || strings.Contains(req.Link, "yandex") {
-			req.Type = "yandex"
-		} else {
+		req.Type = detectLinkType(req.Link)
+		if req.Type == "" {
 			http.Error(w, "cannot detect link type, specify 'type' field", http.StatusBadRequest)
 			return
 		}
 	}
 
+	entry := LinkEntry{
+		URL:     req.Link,
+		Type:    req.Type,
+		AddedAt: time.Now().Format(time.RFC3339),
+		Active:  true,
+	}
+
 	cfg.mu.Lock()
 	cfg.ActiveLink = req.Link
 	cfg.LinkType = req.Type
+	// Deactivate old links of same type, add new
+	for i := range cfg.Links {
+		if cfg.Links[i].Type == req.Type {
+			cfg.Links[i].Active = false
+		}
+	}
+	cfg.Links = append(cfg.Links, entry)
 	cfg.mu.Unlock()
 	cfg.Save()
 
 	logger.Printf("Link updated: type=%s link=%s", req.Type, req.Link)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
+func apiDeleteLink(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST only", http.StatusMethodNotAllowed)
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	var req struct {
+		URL string `json:"url"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	cfg.mu.Lock()
+	found := false
+	newLinks := make([]LinkEntry, 0, len(cfg.Links))
+	for _, l := range cfg.Links {
+		if l.URL == req.URL {
+			found = true
+			continue
+		}
+		newLinks = append(newLinks, l)
+	}
+	cfg.Links = newLinks
+	// If deleted link was the active one, clear it or set next active
+	if cfg.ActiveLink == req.URL {
+		cfg.ActiveLink = ""
+		cfg.LinkType = ""
+		for i := len(cfg.Links) - 1; i >= 0; i-- {
+			if cfg.Links[i].Active {
+				cfg.ActiveLink = cfg.Links[i].URL
+				cfg.LinkType = cfg.Links[i].Type
+				break
+			}
+		}
+	}
+	cfg.mu.Unlock()
+
+	if !found {
+		http.Error(w, "link not found", http.StatusNotFound)
+		return
+	}
+	cfg.Save()
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
+func apiActiveLink(w http.ResponseWriter, r *http.Request) {
+	cfg.mu.RLock()
+	resp := map[string]interface{}{
+		"active_link": cfg.ActiveLink,
+		"link_type":   cfg.LinkType,
+		"links":       cfg.Links,
+	}
+	cfg.mu.RUnlock()
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp)
 }
 
 func apiListClients(w http.ResponseWriter, r *http.Request) {
@@ -837,15 +1068,96 @@ func apiLogs(w http.ResponseWriter, r *http.Request) {
 // ─── Health check ───
 
 var (
-	version   = "dev"
-	startTime = time.Now()
+	version         = "dev"
+	startTime       = time.Now()
+	activeDTLSConns atomic.Int64
 )
 
 func apiHealth(w http.ResponseWriter, r *http.Request) {
 	resp := map[string]interface{}{
-		"status":         "ok",
-		"version":        version,
-		"uptime_seconds": int(time.Since(startTime).Seconds()),
+		"status":           "ok",
+		"version":          version,
+		"uptime_seconds":   int(time.Since(startTime).Seconds()),
+		"dtls_connections": activeDTLSConns.Load(),
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp)
+}
+
+// ─── WireGuard metrics ───
+
+type clientMetrics struct {
+	Name          string `json:"name"`
+	IP            string `json:"ip"`
+	Online        bool   `json:"online"`
+	LastHandshake int64  `json:"last_handshake"` // unix timestamp, 0 if never
+	RxBytes       int64  `json:"rx_bytes"`
+	TxBytes       int64  `json:"tx_bytes"`
+	Enabled       bool   `json:"enabled"`
+}
+
+func parseWGHandshakes() map[string]int64 {
+	out, err := exec.Command("wg", "show", "wg0", "latest-handshakes").Output()
+	if err != nil {
+		return nil
+	}
+	m := make(map[string]int64)
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		parts := strings.Fields(line)
+		if len(parts) == 2 {
+			ts, _ := strconv.ParseInt(parts[1], 10, 64)
+			m[parts[0]] = ts
+		}
+	}
+	return m
+}
+
+func parseWGTransfer() map[string][2]int64 {
+	out, err := exec.Command("wg", "show", "wg0", "transfer").Output()
+	if err != nil {
+		return nil
+	}
+	m := make(map[string][2]int64)
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		parts := strings.Fields(line)
+		if len(parts) == 3 {
+			rx, _ := strconv.ParseInt(parts[1], 10, 64)
+			tx, _ := strconv.ParseInt(parts[2], 10, 64)
+			m[parts[0]] = [2]int64{rx, tx}
+		}
+	}
+	return m
+}
+
+func apiMetrics(w http.ResponseWriter, r *http.Request) {
+	handshakes := parseWGHandshakes()
+	transfers := parseWGTransfer()
+	now := time.Now().Unix()
+
+	cfg.mu.RLock()
+	clients := make([]clientMetrics, 0, len(cfg.Clients))
+	for _, c := range cfg.Clients {
+		cm := clientMetrics{
+			Name:    c.Name,
+			IP:      c.IP,
+			Enabled: c.Enabled,
+		}
+		if ts, ok := handshakes[c.PublicKey]; ok {
+			cm.LastHandshake = ts
+			cm.Online = ts > 0 && (now-ts) < 180 // 3 minutes
+		}
+		if tr, ok := transfers[c.PublicKey]; ok {
+			cm.RxBytes = tr[0]
+			cm.TxBytes = tr[1]
+		}
+		clients = append(clients, cm)
+	}
+	cfg.mu.RUnlock()
+
+	resp := map[string]interface{}{
+		"clients":          clients,
+		"dtls_connections": activeDTLSConns.Load(),
+		"uptime_seconds":   int(time.Since(startTime).Seconds()),
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
@@ -925,6 +1237,9 @@ func main() {
 	configPath := flag.String("config", "/etc/vkvpn/config.json", "config file path")
 	serverIP := flag.String("ip", "", "server public IP")
 	webAddr := flag.String("web", "0.0.0.0:8080", "web admin address")
+	tlsCert := flag.String("tls-cert", "", "TLS certificate for HTTPS admin panel")
+	tlsKey := flag.String("tls-key", "", "TLS key for HTTPS admin panel")
+	autoTLS := flag.Bool("auto-tls", false, "auto-generate self-signed TLS cert for HTTPS")
 	dtlsAddr := flag.String("dtls", "0.0.0.0:56000", "DTLS listen address")
 	wgConnect := flag.String("wg-connect", "127.0.0.1:51820", "WireGuard address to forward to")
 	wgPort := flag.Int("wg-port", 51820, "WireGuard listen port")
@@ -970,6 +1285,8 @@ func main() {
 	mux.HandleFunc("/api/health", apiHealth) // no auth needed
 	mux.HandleFunc("/api/status", authMiddleware(apiGetStatus))
 	mux.HandleFunc("/api/link", authMiddleware(apiSetLink))
+	mux.HandleFunc("/api/link/delete", authMiddleware(apiDeleteLink))
+	mux.HandleFunc("/api/link/active", apiActiveLink) // no auth — for clients
 	mux.HandleFunc("/api/clients", authMiddleware(apiListClients))
 	mux.HandleFunc("/api/clients/add", authMiddleware(apiAddClient))
 	mux.HandleFunc("/api/clients/delete", authMiddleware(apiDeleteClient))
@@ -977,6 +1294,7 @@ func main() {
 	mux.HandleFunc("/api/clients/config", authMiddleware(apiClientConfig))
 	mux.HandleFunc("/api/clients/appconfig", authMiddleware(apiAppConfig))
 	mux.HandleFunc("/api/logs", authMiddleware(apiLogs))
+	mux.HandleFunc("/api/metrics", authMiddleware(apiMetrics))
 
 	webContent, _ := fs.Sub(webFS, "web")
 	fileServer := http.FileServer(http.FS(webContent))
@@ -1004,10 +1322,37 @@ func main() {
 		server.Shutdown(context.Background())
 	}()
 
-	logger.Printf("Admin panel: http://%s/?token=%s", *webAddr, cfg.AdminPass)
+	// Determine TLS mode
+	useTLS := false
+	if *tlsCert != "" && *tlsKey != "" {
+		useTLS = true
+	} else if *autoTLS {
+		certDir := filepath.Dir(*configPath)
+		webCertPath := filepath.Join(certDir, "web-cert.pem")
+		webKeyPath := filepath.Join(certDir, "web-key.pem")
+		_, err := loadOrGenerateWebCert(webCertPath, webKeyPath)
+		if err != nil {
+			logger.Fatalf("Failed to generate web TLS cert: %s", err)
+		}
+		*tlsCert = webCertPath
+		*tlsKey = webKeyPath
+		useTLS = true
+	}
+
+	if useTLS {
+		logger.Printf("Admin panel: https://%s/?token=%s", *webAddr, cfg.AdminPass)
+	} else {
+		logger.Printf("Admin panel: http://%s/?token=%s", *webAddr, cfg.AdminPass)
+	}
 	logger.Printf("DTLS server: %s", *dtlsAddr)
 
-	if err := server.ListenAndServe(); err != http.ErrServerClosed {
-		logger.Fatalf("Web server error: %s", err)
+	if useTLS {
+		if err := server.ListenAndServeTLS(*tlsCert, *tlsKey); err != http.ErrServerClosed {
+			logger.Fatalf("Web server error: %s", err)
+		}
+	} else {
+		if err := server.ListenAndServe(); err != http.ErrServerClosed {
+			logger.Fatalf("Web server error: %s", err)
+		}
 	}
 }

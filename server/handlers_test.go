@@ -539,3 +539,53 @@ func TestApiHealth(t *testing.T) {
 		t.Fatal("missing version in health response")
 	}
 }
+
+func TestRateLimiting(t *testing.T) {
+	cleanup := setupTestConfig(t)
+	defer cleanup()
+
+	// Reset the global rate limiter
+	authLimiter = &rateLimiter{failures: make(map[string]*failEntry)}
+
+	handler := authMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	// Send 10 bad requests — all should get 401
+	for i := 0; i < rateLimitMaxFail; i++ {
+		req := httptest.NewRequest("GET", "/api/status?token=wrong", nil)
+		req.RemoteAddr = "1.2.3.4:12345"
+		w := httptest.NewRecorder()
+		handler(w, req)
+		if w.Code != http.StatusUnauthorized {
+			t.Fatalf("request %d: expected 401, got %d", i+1, w.Code)
+		}
+	}
+
+	// 11th request should get 429
+	req := httptest.NewRequest("GET", "/api/status?token=wrong", nil)
+	req.RemoteAddr = "1.2.3.4:12345"
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected 429, got %d", w.Code)
+	}
+
+	// Correct password should still be blocked (rate limited)
+	req = httptest.NewRequest("GET", "/api/status?token=testpass123", nil)
+	req.RemoteAddr = "1.2.3.4:12345"
+	w = httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected 429 even with correct pass, got %d", w.Code)
+	}
+
+	// Different IP should not be rate limited
+	req = httptest.NewRequest("GET", "/api/status?token=testpass123", nil)
+	req.RemoteAddr = "5.6.7.8:12345"
+	w = httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("different IP: expected 200, got %d", w.Code)
+	}
+}
