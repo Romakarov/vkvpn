@@ -6,25 +6,19 @@
 package tunnel
 
 import (
-	"bytes"
 	"context"
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
-	"io"
 	"log"
 	"net"
-	"net/http"
 	"os"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	"github.com/google/uuid"
-	"github.com/gorilla/websocket"
+	"github.com/Romakarov/vkvpn/pkg/turnauth"
 	"github.com/pion/dtls/v3"
 	"github.com/pion/dtls/v3/pkg/crypto/selfsign"
 	"github.com/pion/logging"
@@ -158,22 +152,17 @@ func Start(tunFd int, peerAddr, vkLink, yandexLink string, connections int, wgPr
 	var link string
 	var getCreds func(string) (string, string, string, error)
 	if vkLink != "" {
-		parts := strings.Split(vkLink, "join/")
-		link = parts[len(parts)-1]
-		getCreds = getVkCreds
+		link = vkLink
+		getCreds = getVkCredsShared
 		if connections <= 0 {
 			connections = 16
 		}
 	} else {
-		parts := strings.Split(yandexLink, "j/")
-		link = parts[len(parts)-1]
-		getCreds = getYandexCreds
+		link = yandexLink
+		getCreds = getYandexCredsShared
 		if connections <= 0 {
 			connections = 1
 		}
-	}
-	if idx := strings.IndexAny(link, "/?#"); idx != -1 {
-		link = link[:idx]
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -378,193 +367,24 @@ func (c *pipeConn) SetDeadline(_ time.Time) error      { return nil }
 func (c *pipeConn) SetReadDeadline(_ time.Time) error  { return nil }
 func (c *pipeConn) SetWriteDeadline(_ time.Time) error { return nil }
 
-// ─── TURN credential functions ───
+// ─── TURN credential wrappers (using pkg/turnauth) ───
 
-func getVkCreds(link string) (user, pass, addr string, err error) {
-	doRequest := func(data string, url string) (resp map[string]interface{}, err error) {
-		client := &http.Client{
-			Timeout:   20 * time.Second,
-			Transport: &http.Transport{MaxIdleConns: 100, MaxIdleConnsPerHost: 100, IdleConnTimeout: 90 * time.Second},
-		}
-		defer client.CloseIdleConnections()
-		req, err := http.NewRequest("POST", url, bytes.NewBuffer([]byte(data)))
-		if err != nil {
-			return nil, err
-		}
-		req.Header.Add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:144.0) Gecko/20100101 Firefox/144.0")
-		req.Header.Add("Content-Type", "application/x-www-form-urlencoded")
-		httpResp, err := client.Do(req)
-		if err != nil {
-			return nil, err
-		}
-		defer httpResp.Body.Close()
-		body, err := io.ReadAll(httpResp.Body)
-		if err != nil {
-			return nil, err
-		}
-		if err := json.Unmarshal(body, &resp); err != nil {
-			return nil, fmt.Errorf("JSON decode: %s (body: %s)", err, string(body))
-		}
-		return resp, nil
-	}
-
-	var resp map[string]interface{}
-	defer func() {
-		if r := recover(); r != nil {
-			err = fmt.Errorf("VK creds parse error: %v (response: %v)", r, resp)
-		}
-	}()
-
-	resp, err = doRequest("client_secret=QbYic1K3lEV5kTGiqlq2&client_id=6287487&scopes=audio_anonymous%2Cvideo_anonymous%2Cphotos_anonymous%2Cprofile_anonymous&isApiOauthAnonymEnabled=false&version=1&app_id=6287487",
-		"https://login.vk.ru/?act=get_anonym_token")
+func getVkCredsShared(link string) (string, string, string, error) {
+	creds, err := turnauth.GetVKCredentials(link)
 	if err != nil {
 		return "", "", "", err
 	}
-	token1 := resp["data"].(map[string]interface{})["access_token"].(string)
-
-	resp, err = doRequest(fmt.Sprintf("access_token=%s", token1),
-		"https://api.vk.ru/method/calls.getAnonymousAccessTokenPayload?v=5.264&client_id=6287487")
-	if err != nil {
-		return "", "", "", err
-	}
-	token2 := resp["response"].(map[string]interface{})["payload"].(string)
-
-	resp, err = doRequest(fmt.Sprintf("client_id=6287487&token_type=messages&payload=%s&client_secret=QbYic1K3lEV5kTGiqlq2&version=1&app_id=6287487", token2),
-		"https://login.vk.ru/?act=get_anonym_token")
-	if err != nil {
-		return "", "", "", err
-	}
-	token3 := resp["data"].(map[string]interface{})["access_token"].(string)
-
-	resp, err = doRequest(fmt.Sprintf("vk_join_link=https://vk.ru/call/join/%s&name=123&access_token=%s", link, token3),
-		"https://api.vk.ru/method/calls.getAnonymousToken?v=5.264")
-	if err != nil {
-		return "", "", "", err
-	}
-	token4 := resp["response"].(map[string]interface{})["token"].(string)
-
-	resp, err = doRequest(fmt.Sprintf("%s%s%s", "session_data=%%7B%%22version%%22%%3A2%%2C%%22device_id%%22%%3A%%22", uuid.New(), "%%22%%2C%%22client_version%%22%%3A1.1%%2C%%22client_type%%22%%3A%%22SDK_JS%%22%%7D&method=auth.anonymLogin&format=JSON&application_key=CGMMEJLGDIHBABABA"),
-		"https://calls.okcdn.ru/fb.do")
-	if err != nil {
-		return "", "", "", err
-	}
-	token5 := resp["session_key"].(string)
-
-	resp, err = doRequest(fmt.Sprintf("joinLink=%s&isVideo=false&protocolVersion=5&anonymToken=%s&method=vchat.joinConversationByLink&format=JSON&application_key=CGMMEJLGDIHBABABA&session_key=%s", link, token4, token5),
-		"https://calls.okcdn.ru/fb.do")
-	if err != nil {
-		return "", "", "", err
-	}
-
-	user = resp["turn_server"].(map[string]interface{})["username"].(string)
-	pass = resp["turn_server"].(map[string]interface{})["credential"].(string)
-	turnURL := resp["turn_server"].(map[string]interface{})["urls"].([]interface{})[0].(string)
-	clean := strings.Split(turnURL, "?")[0]
-	addr = strings.TrimPrefix(strings.TrimPrefix(clean, "turn:"), "turns:")
-	logMsg("VK creds OK: turn=%s", addr)
-	return
+	logMsg("VK creds OK: turn=%s", creds.Address)
+	return creds.Username, creds.Password, creds.Address, nil
 }
 
-func getYandexCreds(link string) (string, string, string, error) {
-	const telemostConfHost = "cloud-api.yandex.ru"
-	telemostConfPath := fmt.Sprintf("/telemost_front/v2/telemost/conferences/https%%3A%%2F%%2Ftelemost.yandex.ru%%2Fj%%2F%s/connection?next_gen_media_platform_allowed=false", link)
-	const userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:144.0) Gecko/20100101 Firefox/144.0"
-
-	type ConfResp struct {
-		RoomID string `json:"room_id"`
-		PeerID string `json:"peer_id"`
-		CC     struct {
-			MSURL string `json:"media_server_url"`
-		} `json:"client_configuration"`
-		Credentials string `json:"credentials"`
-	}
-
-	client := &http.Client{Timeout: 20 * time.Second}
-	defer client.CloseIdleConnections()
-	req, err := http.NewRequest("GET", "https://"+telemostConfHost+telemostConfPath, nil)
+func getYandexCredsShared(link string) (string, string, string, error) {
+	creds, err := turnauth.GetYandexCredentials(link)
 	if err != nil {
 		return "", "", "", err
 	}
-	req.Header.Set("User-Agent", userAgent)
-	req.Header.Set("Referer", "https://telemost.yandex.ru/")
-	req.Header.Set("Origin", "https://telemost.yandex.ru")
-	req.Header.Set("Client-Instance-Id", uuid.New().String())
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", "", "", err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != 200 {
-		body, _ := io.ReadAll(resp.Body)
-		return "", "", "", fmt.Errorf("status=%d body=%s", resp.StatusCode, body)
-	}
-
-	var cr ConfResp
-	if err := json.NewDecoder(resp.Body).Decode(&cr); err != nil {
-		return "", "", "", fmt.Errorf("decode conference response: %s", err)
-	}
-
-	h := http.Header{}
-	h.Set("Origin", "https://telemost.yandex.ru")
-	h.Set("User-Agent", userAgent)
-	wsCtx, wsCancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer wsCancel()
-	wsConn, _, err := (&websocket.Dialer{}).DialContext(wsCtx, cr.CC.MSURL, h)
-	if err != nil {
-		return "", "", "", err
-	}
-	defer wsConn.Close()
-
-	hello := map[string]interface{}{
-		"uid": uuid.New().String(),
-		"hello": map[string]interface{}{
-			"participantMeta":       map[string]interface{}{"name": "Guest", "role": "SPEAKER", "sendAudio": false, "sendVideo": false},
-			"participantAttributes": map[string]interface{}{"name": "Guest", "role": "SPEAKER"},
-			"sendAudio": false, "sendVideo": false, "sendSharing": false,
-			"participantId": cr.PeerID, "roomId": cr.RoomID,
-			"serviceName": "telemost", "credentials": cr.Credentials,
-			"sdkInfo":             map[string]interface{}{"implementation": "browser", "version": "5.15.0", "userAgent": userAgent, "hwConcurrency": 4},
-			"sdkInitializationId": uuid.New().String(),
-			"capabilitiesOffer": map[string]interface{}{
-				"offerAnswerMode": []string{"SEPARATE"}, "initialSubscriberOffer": []string{"ON_HELLO"},
-				"slotsMode": []string{"FROM_CONTROLLER"}, "simulcastMode": []string{"DISABLED"},
-			},
-		},
-	}
-	wsConn.WriteJSON(hello)
-	wsConn.SetReadDeadline(time.Now().Add(15 * time.Second))
-
-	type IceServer struct {
-		Urls       []string `json:"urls"`
-		Username   string   `json:"username"`
-		Credential string   `json:"credential"`
-	}
-	type SH struct {
-		ServerHello struct {
-			RtcConfig struct {
-				IceServers []IceServer `json:"iceServers"`
-			} `json:"rtcConfiguration"`
-		} `json:"serverHello"`
-	}
-
-	for {
-		_, msg, err := wsConn.ReadMessage()
-		if err != nil {
-			return "", "", "", err
-		}
-		var sh SH
-		json.Unmarshal(msg, &sh)
-		for _, s := range sh.ServerHello.RtcConfig.IceServers {
-			for _, u := range s.Urls {
-				if strings.HasPrefix(u, "turn:") && !strings.Contains(u, "transport=tcp") {
-					clean := strings.Split(u, "?")[0]
-					addr := strings.TrimPrefix(clean, "turn:")
-					return s.Username, s.Credential, addr, nil
-				}
-			}
-		}
-	}
+	logMsg("Yandex creds OK: turn=%s", creds.Address)
+	return creds.Username, creds.Password, creds.Address, nil
 }
 
 // ─── DTLS + TURN functions ───
