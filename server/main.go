@@ -2,11 +2,19 @@ package main
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"embed"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
+	"math/big"
 
 	"golang.org/x/crypto/curve25519"
 	"flag"
@@ -260,12 +268,80 @@ func init() {
 	logger = log.New(w, "", log.LstdFlags)
 }
 
+// ─── DTLS Certificate ───
+
+var dtlsFingerprint string
+
+func loadOrGenerateDTLSCert(certPath, keyPath string) (tls.Certificate, error) {
+	// Try to load existing cert
+	if _, err := os.Stat(certPath); err == nil {
+		cert, err := tls.LoadX509KeyPair(certPath, keyPath)
+		if err == nil {
+			if len(cert.Certificate) > 0 {
+				hash := sha256.Sum256(cert.Certificate[0])
+				dtlsFingerprint = hex.EncodeToString(hash[:])
+				logger.Printf("Loaded DTLS certificate, fingerprint: %s", dtlsFingerprint)
+			}
+			return cert, nil
+		}
+		logger.Printf("Warning: failed to load existing cert, regenerating: %s", err)
+	}
+
+	// Generate new self-signed cert
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return tls.Certificate{}, fmt.Errorf("generate key: %w", err)
+	}
+
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "vkvpn-dtls"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(10 * 365 * 24 * time.Hour), // 10 years
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+	}
+
+	certDER, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		return tls.Certificate{}, fmt.Errorf("create cert: %w", err)
+	}
+
+	// Save cert
+	os.MkdirAll(filepath.Dir(certPath), 0700)
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
+	if err := os.WriteFile(certPath, certPEM, 0600); err != nil {
+		return tls.Certificate{}, fmt.Errorf("write cert: %w", err)
+	}
+
+	keyDER, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		return tls.Certificate{}, fmt.Errorf("marshal key: %w", err)
+	}
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
+	if err := os.WriteFile(keyPath, keyPEM, 0600); err != nil {
+		return tls.Certificate{}, fmt.Errorf("write key: %w", err)
+	}
+
+	hash := sha256.Sum256(certDER)
+	dtlsFingerprint = hex.EncodeToString(hash[:])
+	logger.Printf("Generated new DTLS certificate, fingerprint: %s", dtlsFingerprint)
+
+	return tls.Certificate{
+		Certificate: [][]byte{certDER},
+		PrivateKey:  key,
+	}, nil
+}
+
 // ─── DTLS Server ───
 
 func runDTLSServer(ctx context.Context, listenAddr string, connectAddr string) {
-	certificate, err := selfsign.GenerateSelfSigned()
+	certificate, err := loadOrGenerateDTLSCert("/etc/vkvpn/dtls-cert.pem", "/etc/vkvpn/dtls-key.pem")
 	if err != nil {
-		logger.Fatalf("Failed to generate certificate: %s", err)
+		logger.Printf("Warning: failed to load/generate persistent cert, using ephemeral: %s", err)
+		certificate, err = selfsign.GenerateSelfSigned()
+		if err != nil {
+			logger.Fatalf("Failed to generate certificate: %s", err)
+		}
 	}
 
 	config := &dtls.Config{
@@ -693,16 +769,17 @@ func apiAppConfig(w http.ResponseWriter, r *http.Request) {
 	}
 
 	appCfg := map[string]interface{}{
-		"server":     cfg.ServerIP,
-		"link":       cfg.ActiveLink,
-		"provider":   cfg.LinkType,
-		"wg_privkey": found.PrivateKey,
-		"wg_pubkey":  cfg.ServerPub,
-		"wg_address": found.IP,
-		"wg_dns":     cfg.DNS,
-		"wg_port":    cfg.WGPort,
-		"dtls_port":  cfg.DTLSPort,
-		"name":       found.Name,
+		"server":           cfg.ServerIP,
+		"link":             cfg.ActiveLink,
+		"provider":         cfg.LinkType,
+		"wg_privkey":       found.PrivateKey,
+		"wg_pubkey":        cfg.ServerPub,
+		"wg_address":       found.IP,
+		"wg_dns":           cfg.DNS,
+		"wg_port":          cfg.WGPort,
+		"dtls_port":        cfg.DTLSPort,
+		"name":             found.Name,
+		"dtls_fingerprint": dtlsFingerprint,
 	}
 	cfg.mu.RUnlock()
 

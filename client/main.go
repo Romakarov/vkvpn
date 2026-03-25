@@ -6,7 +6,9 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
+	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -374,6 +376,8 @@ func getYandexCreds(link string) (string, string, string, error) {
 
 // ─── DTLS ───
 
+var expectedFingerprint string
+
 func dtlsFunc(ctx context.Context, conn net.PacketConn, peer *net.UDPAddr) (net.Conn, error) {
 	certificate, err := selfsign.GenerateSelfSigned()
 	if err != nil {
@@ -385,6 +389,19 @@ func dtlsFunc(ctx context.Context, conn net.PacketConn, peer *net.UDPAddr) (net.
 		ExtendedMasterSecret:  dtls.RequireExtendedMasterSecret,
 		CipherSuites:          []dtls.CipherSuiteID{dtls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256},
 		ConnectionIDGenerator: dtls.OnlySendCIDGenerator(),
+		VerifyConnection: func(state *dtls.State) error {
+			if expectedFingerprint == "" {
+				return nil // no pinning configured
+			}
+			for _, cert := range state.PeerCertificates {
+				hash := sha256.Sum256(cert)
+				fp := hex.EncodeToString(hash[:])
+				if fp == expectedFingerprint {
+					return nil
+				}
+			}
+			return fmt.Errorf("DTLS certificate fingerprint mismatch (MITM?)")
+		},
 	}
 	ctx1, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
@@ -764,7 +781,9 @@ func main() {
 	n := flag.Int("n", 0, "connections to TURN (default 16 for VK, 1 for Yandex)")
 	udp := flag.Bool("udp", false, "connect to TURN with UDP")
 	direct := flag.Bool("no-dtls", false, "connect without obfuscation. DO NOT USE")
+	fingerprint := flag.String("dtls-fingerprint", "", "expected DTLS certificate fingerprint (SHA-256 hex)")
 	flag.Parse()
+	expectedFingerprint = *fingerprint
 	if *peerAddr == "" {
 		log.Panicf("Need peer address!")
 	}
