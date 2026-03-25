@@ -16,6 +16,9 @@ import (
 	"encoding/pem"
 	"math/big"
 
+	"regexp"
+
+	"golang.org/x/crypto/bcrypt"
 	"golang.org/x/crypto/curve25519"
 	"flag"
 	"fmt"
@@ -54,8 +57,9 @@ type Config struct {
 	ActiveLink  string   `json:"active_link"`
 	LinkType    string   `json:"link_type"`
 	Clients     []Client `json:"clients"`
-	DTLSPort    int      `json:"dtls_port"`
-	AdminPass   string   `json:"admin_pass"`
+	DTLSPort      int      `json:"dtls_port"`
+	AdminPass     string   `json:"admin_pass,omitempty"`     // legacy plaintext, migrated on startup
+	AdminPassHash string   `json:"admin_pass_hash,omitempty"` // bcrypt hash
 }
 
 type Client struct {
@@ -482,33 +486,48 @@ func generateAdminPass() string {
 	return base64.URLEncoding.EncodeToString(b)[:16]
 }
 
+func (c *Config) checkPassword(password string) bool {
+	c.mu.RLock()
+	hash := c.AdminPassHash
+	plain := c.AdminPass
+	c.mu.RUnlock()
+
+	if hash != "" {
+		return bcrypt.CompareHashAndPassword([]byte(hash), []byte(password)) == nil
+	}
+	// Legacy plaintext fallback
+	return plain != "" && plain == password
+}
+
+var clientNameRe = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,64}$`)
+
 func authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		cfg.mu.RLock()
-		pass := cfg.AdminPass
+		hasPass := cfg.AdminPassHash != "" || cfg.AdminPass != ""
 		cfg.mu.RUnlock()
 
-		if pass == "" {
+		if !hasPass {
 			next(w, r)
 			return
 		}
 
-		// Check cookie or header
+		// Check cookie
 		cookie, err := r.Cookie("admin_token")
-		if err == nil && cookie.Value == pass {
+		if err == nil && cfg.checkPassword(cookie.Value) {
 			next(w, r)
 			return
 		}
-		if r.Header.Get("X-Admin-Token") == pass {
+		// Check header
+		if h := r.Header.Get("X-Admin-Token"); h != "" && cfg.checkPassword(h) {
 			next(w, r)
 			return
 		}
-
 		// Check query param (for initial login)
-		if r.URL.Query().Get("token") == pass {
+		if tok := r.URL.Query().Get("token"); tok != "" && cfg.checkPassword(tok) {
 			http.SetCookie(w, &http.Cookie{
 				Name:     "admin_token",
-				Value:    pass,
+				Value:    tok,
 				Path:     "/",
 				MaxAge:   86400 * 30,
 				HttpOnly: true,
@@ -543,6 +562,7 @@ func apiSetLink(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "POST only", http.StatusMethodNotAllowed)
 		return
 	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	var req struct {
 		Link string `json:"link"`
 		Type string `json:"type"`
@@ -595,6 +615,7 @@ func apiAddClient(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "POST only", http.StatusMethodNotAllowed)
 		return
 	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	var req struct {
 		Name string `json:"name"`
 	}
@@ -606,6 +627,20 @@ func apiAddClient(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "name required", http.StatusBadRequest)
 		return
 	}
+	if !clientNameRe.MatchString(req.Name) {
+		http.Error(w, "invalid name: must match [a-zA-Z0-9_-]{1,64}", http.StatusBadRequest)
+		return
+	}
+	// Check for duplicate name
+	cfg.mu.RLock()
+	for _, cl := range cfg.Clients {
+		if cl.Name == req.Name {
+			cfg.mu.RUnlock()
+			http.Error(w, "client already exists", http.StatusConflict)
+			return
+		}
+	}
+	cfg.mu.RUnlock()
 
 	priv, pub, err := wgGenKey()
 	if err != nil {
@@ -647,6 +682,7 @@ func apiDeleteClient(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "POST only", http.StatusMethodNotAllowed)
 		return
 	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	var req struct {
 		Name string `json:"name"`
 	}
@@ -684,6 +720,7 @@ func apiToggleClient(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "POST only", http.StatusMethodNotAllowed)
 		return
 	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	var req struct {
 		Name string `json:"name"`
 	}
@@ -797,6 +834,23 @@ func apiLogs(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(entries)
 }
 
+// ─── Health check ───
+
+var (
+	version   = "dev"
+	startTime = time.Now()
+)
+
+func apiHealth(w http.ResponseWriter, r *http.Request) {
+	resp := map[string]interface{}{
+		"status":         "ok",
+		"version":        version,
+		"uptime_seconds": int(time.Since(startTime).Seconds()),
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp)
+}
+
 // ─── Init config ───
 
 func initConfig(configPath, serverIP string, wgPort, dtlsPort int) {
@@ -837,10 +891,28 @@ func initConfig(configPath, serverIP string, wgPort, dtlsPort int) {
 			needSave = true
 		}
 	}
-	if cfg.AdminPass == "" {
-		cfg.AdminPass = generateAdminPass()
+	// Migrate plaintext password to bcrypt hash
+	if cfg.AdminPass != "" && cfg.AdminPassHash == "" {
+		hash, err := bcrypt.GenerateFromPassword([]byte(cfg.AdminPass), bcrypt.DefaultCost)
+		if err != nil {
+			logger.Printf("Warning: failed to hash password: %s", err)
+		} else {
+			cfg.AdminPassHash = string(hash)
+			logger.Printf("Admin password migrated to bcrypt")
+			// Keep AdminPass for this session (cookie compatibility), clear on next save
+			needSave = true
+		}
+	}
+	if cfg.AdminPass == "" && cfg.AdminPassHash == "" {
+		pass := generateAdminPass()
+		hash, err := bcrypt.GenerateFromPassword([]byte(pass), bcrypt.DefaultCost)
+		if err != nil {
+			logger.Fatalf("Failed to hash password: %s", err)
+		}
+		cfg.AdminPass = pass // temporary, for printing
+		cfg.AdminPassHash = string(hash)
 		needSave = true
-		logger.Printf("Admin password generated: %s", cfg.AdminPass)
+		logger.Printf("Admin password generated: %s", pass)
 	}
 	if needSave {
 		cfg.Save()
@@ -895,6 +967,7 @@ func main() {
 
 	// Web server
 	mux := http.NewServeMux()
+	mux.HandleFunc("/api/health", apiHealth) // no auth needed
 	mux.HandleFunc("/api/status", authMiddleware(apiGetStatus))
 	mux.HandleFunc("/api/link", authMiddleware(apiSetLink))
 	mux.HandleFunc("/api/clients", authMiddleware(apiListClients))

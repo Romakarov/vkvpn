@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"golang.org/x/crypto/bcrypt"
 )
 
 // setupTestConfig creates a test config with temp file and sets the global cfg
@@ -452,5 +454,88 @@ func TestApiLogs(t *testing.T) {
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", w.Code)
+	}
+}
+
+// ─── Bcrypt Auth ───
+
+func TestAuthBcrypt(t *testing.T) {
+	cleanup := setupTestConfig(t)
+	defer cleanup()
+
+	// Set bcrypt hash and clear plaintext
+	hash, _ := bcrypt.GenerateFromPassword([]byte("securepass"), bcrypt.DefaultCost)
+	cfg.mu.Lock()
+	cfg.AdminPassHash = string(hash)
+	cfg.AdminPass = ""
+	cfg.mu.Unlock()
+
+	handler := authMiddleware(apiGetStatus)
+
+	// Correct password
+	req := httptest.NewRequest("GET", "/api/status?token=securepass", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 with correct bcrypt pass, got %d", w.Code)
+	}
+
+	// Wrong password
+	req = httptest.NewRequest("GET", "/api/status?token=wrongpass", nil)
+	w = httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 with wrong pass, got %d", w.Code)
+	}
+}
+
+// ─── Input Validation ───
+
+func TestApiAddClientInvalidName(t *testing.T) {
+	cleanup := setupTestConfig(t)
+	defer cleanup()
+
+	body := bytes.NewBufferString(`{"name":"bad name!@#"}`)
+	req := httptest.NewRequest("POST", "/api/clients/add", body)
+	w := httptest.NewRecorder()
+	apiAddClient(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for invalid name, got %d", w.Code)
+	}
+}
+
+func TestApiAddClientDuplicate(t *testing.T) {
+	cleanup := setupTestConfig(t)
+	defer cleanup()
+
+	body := bytes.NewBufferString(`{"name":"alice"}`)
+	req := httptest.NewRequest("POST", "/api/clients/add", body)
+	w := httptest.NewRecorder()
+	apiAddClient(w, req)
+
+	if w.Code != http.StatusConflict {
+		t.Fatalf("expected 409 for duplicate, got %d", w.Code)
+	}
+}
+
+// ─── Health Check ───
+
+func TestApiHealth(t *testing.T) {
+	req := httptest.NewRequest("GET", "/api/health", nil)
+	w := httptest.NewRecorder()
+	apiHealth(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	var resp map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp["status"] != "ok" {
+		t.Fatalf("expected status ok, got %v", resp["status"])
+	}
+	if resp["version"] == nil {
+		t.Fatal("missing version in health response")
 	}
 }
