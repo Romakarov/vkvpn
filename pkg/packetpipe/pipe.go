@@ -18,6 +18,11 @@ type pipeConn struct {
 	mu     sync.Mutex
 	closed bool
 	local  net.Addr
+
+	// Deadline support: a channel that is closed when the deadline fires
+	readDone chan struct{}
+	readMu   sync.Mutex
+	readTimer *time.Timer
 }
 
 type dummyAddr struct{}
@@ -34,12 +39,27 @@ func AsyncPacketPipe() (net.PacketConn, net.PacketConn) {
 }
 
 func (c *pipeConn) ReadFrom(p []byte) (n int, addr net.Addr, err error) {
+	c.readMu.Lock()
+	done := c.readDone
+	c.readMu.Unlock()
+
+	if done != nil {
+		select {
+		case pkt, ok := <-c.ch:
+			if !ok {
+				return 0, nil, net.ErrClosed
+			}
+			return copy(p, pkt.data), pkt.addr, nil
+		case <-done:
+			return 0, nil, &net.OpError{Op: "read", Err: deadlineErr{}}
+		}
+	}
+
 	pkt, ok := <-c.ch
 	if !ok {
 		return 0, nil, net.ErrClosed
 	}
-	n = copy(p, pkt.data)
-	return n, pkt.addr, nil
+	return copy(p, pkt.data), pkt.addr, nil
 }
 
 func (c *pipeConn) WriteTo(p []byte, addr net.Addr) (n int, err error) {
@@ -79,7 +99,48 @@ func (c *pipeConn) Close() error {
 	return nil
 }
 
-func (c *pipeConn) LocalAddr() net.Addr                         { return c.local }
-func (c *pipeConn) SetDeadline(_ time.Time) error               { return nil }
-func (c *pipeConn) SetReadDeadline(_ time.Time) error           { return nil }
-func (c *pipeConn) SetWriteDeadline(_ time.Time) error          { return nil }
+func (c *pipeConn) LocalAddr() net.Addr { return c.local }
+
+func (c *pipeConn) SetDeadline(t time.Time) error {
+	c.SetReadDeadline(t)
+	return nil
+}
+
+func (c *pipeConn) SetReadDeadline(t time.Time) error {
+	c.readMu.Lock()
+	defer c.readMu.Unlock()
+
+	// Cancel previous timer
+	if c.readTimer != nil {
+		c.readTimer.Stop()
+		c.readTimer = nil
+	}
+
+	if t.IsZero() {
+		c.readDone = nil
+		return nil
+	}
+
+	d := time.Until(t)
+	if d <= 0 {
+		// Already past: signal immediately
+		ch := make(chan struct{})
+		close(ch)
+		c.readDone = ch
+		return nil
+	}
+
+	ch := make(chan struct{})
+	c.readDone = ch
+	c.readTimer = time.AfterFunc(d, func() { close(ch) })
+	return nil
+}
+
+func (c *pipeConn) SetWriteDeadline(_ time.Time) error { return nil }
+
+// deadlineErr implements net.Error for deadline exceeded
+type deadlineErr struct{}
+
+func (deadlineErr) Error() string   { return "i/o timeout" }
+func (deadlineErr) Timeout() bool   { return true }
+func (deadlineErr) Temporary() bool { return true }

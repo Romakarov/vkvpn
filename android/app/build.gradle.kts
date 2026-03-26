@@ -39,4 +39,11 @@ android {
 dependencies {
     // Go tunnel library (built by gomobile, placed as .aar)
     implementation(fileTree(mapOf("dir" to "libs", "include" to listOf("*.aar"))))
+    // AndroidX
+    implementation("androidx.appcompat:appcompat:1.7.0")
+    implementation("androidx.activity:activity-ktx:1.9.3")
+    // Encrypted storage for WG keys
+    implementation("androidx.security:security-crypto:1.1.0-alpha06")
+    // QR code scanner
+    implementation("com.journeyapps:zxing-android-embedded:4.3.0")
 }

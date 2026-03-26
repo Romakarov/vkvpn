@@ -89,15 +89,34 @@
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:layout_marginBottom="48dp"
-                android:text="Paste config from admin panel"
+                android:layout_marginBottom="32dp"
+                android:text="Setup"
                 android:textColor="#8888aa"
                 android:textSize="15sp" />
+
+            <Button
+                android:id="@+id/btn_scan_qr"
+                android:layout_width="match_parent"
+                android:layout_height="56dp"
+                android:background="@drawable/btn_connect_bg"
+                android:text="📷  Scan QR Code"
+                android:textColor="#ffffff"
+                android:textSize="18sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="24dp"
+                android:layout_marginBottom="16dp"
+                android:text="or paste config manually"
+                android:textColor="#555577"
+                android:textSize="13sp" />
 
             <EditText
                 android:id="@+id/et_config"
                 android:layout_width="match_parent"
-                android:layout_height="160dp"
+                android:layout_height="120dp"
                 android:background="@drawable/input_bg"
                 android:fontFamily="monospace"
                 android:gravity="top|start"
@@ -111,19 +130,19 @@
             <Button
                 android:id="@+id/btn_import"
                 android:layout_width="match_parent"
-                android:layout_height="56dp"
-                android:layout_marginTop="16dp"
+                android:layout_height="48dp"
+                android:layout_marginTop="12dp"
                 android:background="@drawable/btn_connect_bg"
                 android:text="Import Config"
                 android:textColor="#ffffff"
-                android:textSize="18sp"
+                android:textSize="16sp"
                 android:textStyle="bold" />
 
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="24dp"
-                android:text="Get config from your admin"
+                android:text="Get config QR from your admin"
                 android:textColor="#555577"
                 android:textSize="13sp" />
 
