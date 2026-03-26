@@ -118,7 +118,7 @@ func GetVKCredentials(link string) (*Credentials, error) {
 	}
 
 	// Step 4: Get anonymous call token
-	data = fmt.Sprintf("vk_join_link=https://vk.ru/call/join/%s&name=123&access_token=%s", link, token3)
+	data = fmt.Sprintf("vk_join_link=https://vk.com/call/join/%s&name=123&access_token=%s", link, token3)
 	resp, err = doRequest(data, vkBaseURLs.ApiVK+"/method/calls.getAnonymousToken?v=5.264")
 	if err != nil {
 		return nil, fmt.Errorf("step 4: %w", err)

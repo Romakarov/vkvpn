@@ -300,19 +300,39 @@ func Start(tunFd int, peerAddr, vkLink, yandexLink string, connections int, wgPr
 	return nil
 }
 
-// Stop stops the tunnel
+// Stop stops the tunnel and waits for goroutines to exit (up to 5 seconds).
 func Stop() {
 	tunnelMu.Lock()
-	defer tunnelMu.Unlock()
 	if running && tunnelCancel != nil {
 		tunnelCancel()
 	}
+	tunnelMu.Unlock()
+
 	wgCloseOnce.Do(func() {
-		if wgDevice != nil {
-			wgDevice.Close()
-			wgDevice = nil
+		tunnelMu.Lock()
+		dev := wgDevice
+		wgDevice = nil
+		tunnelMu.Unlock()
+		if dev != nil {
+			dev.Close()
 		}
 	})
+
+	// Wait for goroutines to set running=false (max 5 seconds)
+	for i := 0; i < 50; i++ {
+		tunnelMu.Lock()
+		r := running
+		tunnelMu.Unlock()
+		if !r {
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	// Force reset if goroutines are stuck
+	tunnelMu.Lock()
+	running = false
+	tunnelMu.Unlock()
+	logMsg("Stop: forced running=false after timeout")
 }
 
 // IsRunning returns true if tunnel is active
@@ -450,7 +470,7 @@ func getVkCreds(link string) (user, pass, addr string, err error) {
 	}
 	token3 := resp["data"].(map[string]interface{})["access_token"].(string)
 
-	resp, err = doRequest(fmt.Sprintf("vk_join_link=https://vk.ru/call/join/%s&name=123&access_token=%s", link, token3),
+	resp, err = doRequest(fmt.Sprintf("vk_join_link=https://vk.com/call/join/%s&name=123&access_token=%s", link, token3),
 		"https://api.vk.ru/method/calls.getAnonymousToken?v=5.264")
 	if err != nil {
 		return "", "", "", err
@@ -562,10 +582,10 @@ func getYandexCreds(link string) (string, string, string, error) {
 		} `json:"serverHello"`
 	}
 
-	for {
+	for i := 0; i < 20; i++ { // max 20 messages before giving up
 		_, msg, err := wsConn.ReadMessage()
 		if err != nil {
-			return "", "", "", err
+			return "", "", "", fmt.Errorf("yandex ws read: %s", err)
 		}
 		var sh SH
 		json.Unmarshal(msg, &sh)
@@ -579,6 +599,7 @@ func getYandexCreds(link string) (string, string, string, error) {
 			}
 		}
 	}
+	return "", "", "", fmt.Errorf("yandex: no TURN server found after 20 messages")
 }
 
 // ─── DTLS + TURN functions ───
@@ -871,6 +892,7 @@ func oneDtlsConnectionLoop(ctx context.Context, peer *net.UDPAddr, lch <-chan ne
 }
 
 func oneTurnConnectionLoop(ctx context.Context, params *turnParams, peer *net.UDPAddr, cch <-chan net.PacketConn, t <-chan time.Time) {
+	backoff := time.Second
 	for {
 		select {
 		case <-ctx.Done():
@@ -885,7 +907,18 @@ func oneTurnConnectionLoop(ctx context.Context, params *turnParams, peer *net.UD
 			c := make(chan error)
 			go oneTurnConnection(ctx, params, peer, c2, c)
 			if err := <-c; err != nil {
-				logMsg("%s", err)
+				logMsg("TURN error (retry in %v): %s", backoff, err)
+				// Exponential backoff on failure, max 30s
+				select {
+				case <-time.After(backoff):
+				case <-ctx.Done():
+					return
+				}
+				if backoff < 30*time.Second {
+					backoff *= 2
+				}
+			} else {
+				backoff = time.Second // reset on success
 			}
 		}
 	}
