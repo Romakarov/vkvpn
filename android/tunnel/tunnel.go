@@ -124,7 +124,7 @@ func (t *androidTUN) Close() error {
 // connections: number of parallel TURN connections (0 = auto)
 // wgPrivKey: WireGuard client private key (base64)
 // serverPubKey: WireGuard server public key (base64)
-func Start(tunFd int, peerAddr, vkLink, yandexLink string, connections int, wgPrivKey, serverPubKey, dtlsFingerprint string, useUDP ...bool) error {
+func Start(tunFd int, peerAddr, vkLink, yandexLink string, connections int, wgPrivKey, serverPubKey, dtlsFingerprint string) error {
 	tunnelMu.Lock()
 	if running {
 		tunnelMu.Unlock()
@@ -232,11 +232,9 @@ func Start(tunFd int, peerAddr, vkLink, yandexLink string, connections int, wgPr
 
 	logMsg("Tunnel starting: peer=%s connections=%d wg_internal_port=%d", peerAddr, connections, internalPort)
 
-	udp := len(useUDP) > 0 && useUDP[0]
 	params := &turnParams{
 		link:     link,
 		getCreds: getCreds,
-		udp:      udp,
 	}
 
 	// Feed listenConn to DTLS connection loops
