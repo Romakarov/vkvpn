@@ -5,9 +5,15 @@ set -e
 
 CONFIG_FILE="$HOME/.vkvpn.conf"
 
-# Load or ask for config
+# Load config safely (no source — prevents injection)
 if [ -f "$CONFIG_FILE" ]; then
-  source "$CONFIG_FILE"
+  while IFS='=' read -r key val; do
+    key=$(echo "$key" | tr -d '[:space:]"')
+    val=$(echo "$val" | sed 's/^"//;s/"$//')
+    case "$key" in
+      PEER|LINK|LINK_FLAG|PROVIDER|CONNS) declare "$key=$val" ;;
+    esac
+  done < "$CONFIG_FILE"
 fi
 
 if [ -z "$PEER" ]; then

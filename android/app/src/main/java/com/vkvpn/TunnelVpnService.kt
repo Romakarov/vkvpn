@@ -40,9 +40,10 @@ class TunnelVpnService : VpnService() {
                 val wgDns = intent.getStringExtra("wg_dns") ?: "1.1.1.1"
                 val serverPubKey = intent.getStringExtra("wg_pubkey") ?: return START_NOT_STICKY
                 val dtlsPort = intent.getIntExtra("dtls_port", 56000)
+                val dtlsFingerprint = intent.getStringExtra("dtls_fingerprint") ?: ""
 
                 startForeground(1, buildNotification("Connecting..."))
-                startTunnel(server, link, provider, wgPrivKey, wgAddress, wgDns, serverPubKey, dtlsPort)
+                startTunnel(server, link, provider, wgPrivKey, wgAddress, wgDns, serverPubKey, dtlsPort, dtlsFingerprint)
             }
             ACTION_STOP -> {
                 stopTunnel()
@@ -56,7 +57,7 @@ class TunnelVpnService : VpnService() {
     private fun startTunnel(
         server: String, link: String, provider: String,
         wgPrivKey: String, wgAddress: String, wgDns: String,
-        serverPubKey: String, dtlsPort: Int
+        serverPubKey: String, dtlsPort: Int, dtlsFingerprint: String
     ) {
         tunnelThread = Thread {
             try {
@@ -95,7 +96,8 @@ class TunnelVpnService : VpnService() {
                 Tunnel.start(
                     tunFd.toLong(), peerAddr,
                     vkLink, yaLink,
-                    0L, wgPrivKey, serverPubKey
+                    0L, wgPrivKey, serverPubKey,
+                    dtlsFingerprint
                 )
 
                 // Mark running AFTER successful start

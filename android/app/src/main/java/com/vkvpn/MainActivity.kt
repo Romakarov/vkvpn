@@ -1,19 +1,39 @@
 package com.vkvpn
 
-import android.app.Activity
+import android.Manifest
 import android.content.Context
 import android.content.Intent
+import android.content.SharedPreferences
+import android.content.pm.PackageManager
 import android.net.VpnService
 import android.os.Bundle
 import android.view.View
 import android.widget.*
+import androidx.appcompat.app.AppCompatActivity
+import androidx.security.crypto.EncryptedSharedPreferences
+import androidx.security.crypto.MasterKey
+import com.journeyapps.barcodescanner.ScanContract
+import com.journeyapps.barcodescanner.ScanIntentResult
+import com.journeyapps.barcodescanner.ScanOptions
 import org.json.JSONObject
 
-class MainActivity : Activity() {
+class MainActivity : AppCompatActivity() {
 
     companion object {
         const val VPN_REQUEST_CODE = 1
-        const val PREFS = "vkvpn_prefs"
+        const val CAMERA_PERMISSION_CODE = 2
+        const val PREFS = "vkvpn_prefs_encrypted"
+    }
+
+    private fun getEncryptedPrefs(): SharedPreferences {
+        val masterKey = MasterKey.Builder(this)
+            .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
+            .build()
+        return EncryptedSharedPreferences.create(
+            this, PREFS, masterKey,
+            EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+            EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
+        )
     }
 
     private lateinit var mainScreen: View
@@ -24,6 +44,14 @@ class MainActivity : Activity() {
     private lateinit var btnReset: Button
     private lateinit var etConfig: EditText
     private lateinit var btnImport: Button
+    private lateinit var btnScanQr: Button
+
+    // QR scanner launcher
+    private val qrLauncher = registerForActivityResult(ScanContract()) { result: ScanIntentResult ->
+        if (result.contents != null) {
+            processConfig(result.contents)
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -37,6 +65,7 @@ class MainActivity : Activity() {
         btnReset = findViewById(R.id.btn_reset)
         etConfig = findViewById(R.id.et_config)
         btnImport = findViewById(R.id.btn_import)
+        btnScanQr = findViewById(R.id.btn_scan_qr)
 
         btnConnect.setOnClickListener {
             if (TunnelVpnService.isRunning) {
@@ -47,14 +76,27 @@ class MainActivity : Activity() {
         }
 
         btnImport.setOnClickListener {
-            importConfig()
+            val text = etConfig.text.toString().trim()
+            if (text.isEmpty()) {
+                Toast.makeText(this, "Paste config JSON", Toast.LENGTH_SHORT).show()
+                return@setOnClickListener
+            }
+            processConfig(text)
+        }
+
+        btnScanQr.setOnClickListener {
+            if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+                requestPermissions(arrayOf(Manifest.permission.CAMERA), CAMERA_PERMISSION_CODE)
+            } else {
+                launchQrScanner()
+            }
         }
 
         btnReset.setOnClickListener {
             if (TunnelVpnService.isRunning) {
                 stopVpn()
             }
-            getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().clear().apply()
+            getEncryptedPrefs().edit().clear().apply()
             showScreen()
         }
 
@@ -66,8 +108,51 @@ class MainActivity : Activity() {
         updateUI()
     }
 
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == CAMERA_PERMISSION_CODE && grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+            launchQrScanner()
+        } else if (requestCode == CAMERA_PERMISSION_CODE) {
+            Toast.makeText(this, "Camera permission required to scan QR", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    private fun launchQrScanner() {
+        val options = ScanOptions().apply {
+            setDesiredBarcodeFormats(ScanOptions.QR_CODE)
+            setPrompt("Scan config QR from admin panel")
+            setBeepEnabled(false)
+            setOrientationLocked(true)
+            setCameraId(0)
+        }
+        qrLauncher.launch(options)
+    }
+
+    private fun processConfig(text: String) {
+        try {
+            val json = JSONObject(text)
+            val prefs = getEncryptedPrefs().edit()
+            prefs.putString("server", json.getString("server"))
+            prefs.putString("link", json.optString("link", ""))
+            prefs.putString("provider", json.optString("provider", "vk"))
+            prefs.putString("wg_privkey", json.getString("wg_privkey"))
+            prefs.putString("wg_address", json.optString("wg_address", "10.66.66.2"))
+            prefs.putString("wg_dns", json.optString("wg_dns", "1.1.1.1"))
+            prefs.putString("wg_pubkey", json.getString("wg_pubkey"))
+            prefs.putInt("dtls_port", json.optInt("dtls_port", 56000))
+            prefs.putString("dtls_fingerprint", json.optString("dtls_fingerprint", ""))
+            prefs.putString("name", json.optString("name", ""))
+            prefs.apply()
+
+            Toast.makeText(this, "Config imported! ✓", Toast.LENGTH_SHORT).show()
+            showScreen()
+        } catch (e: Exception) {
+            Toast.makeText(this, "Invalid config: ${e.message}", Toast.LENGTH_LONG).show()
+        }
+    }
+
     private fun hasConfig(): Boolean {
-        val prefs = getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val prefs = getEncryptedPrefs()
         return prefs.getString("server", "")?.isNotEmpty() == true &&
                prefs.getString("wg_privkey", "")?.isNotEmpty() == true &&
                prefs.getString("wg_pubkey", "")?.isNotEmpty() == true
@@ -77,41 +162,13 @@ class MainActivity : Activity() {
         if (hasConfig()) {
             mainScreen.visibility = View.VISIBLE
             setupScreen.visibility = View.GONE
-            val prefs = getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            val prefs = getEncryptedPrefs()
             tvClientName.text = prefs.getString("name", "")
         } else {
             mainScreen.visibility = View.GONE
             setupScreen.visibility = View.VISIBLE
         }
         updateUI()
-    }
-
-    private fun importConfig() {
-        val text = etConfig.text.toString().trim()
-        if (text.isEmpty()) {
-            Toast.makeText(this, "Paste config JSON", Toast.LENGTH_SHORT).show()
-            return
-        }
-
-        try {
-            val json = JSONObject(text)
-            val prefs = getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
-            prefs.putString("server", json.getString("server"))
-            prefs.putString("link", json.optString("link", ""))
-            prefs.putString("provider", json.optString("provider", "vk"))
-            prefs.putString("wg_privkey", json.getString("wg_privkey"))
-            prefs.putString("wg_address", json.optString("wg_address", "10.66.66.2"))
-            prefs.putString("wg_dns", json.optString("wg_dns", "1.1.1.1"))
-            prefs.putString("wg_pubkey", json.getString("wg_pubkey"))
-            prefs.putInt("dtls_port", json.optInt("dtls_port", 56000))
-            prefs.putString("name", json.optString("name", ""))
-            prefs.apply()
-
-            Toast.makeText(this, "Config imported!", Toast.LENGTH_SHORT).show()
-            showScreen()
-        } catch (e: Exception) {
-            Toast.makeText(this, "Invalid config: ${e.message}", Toast.LENGTH_LONG).show()
-        }
     }
 
     private fun updateUI() {
@@ -129,7 +186,7 @@ class MainActivity : Activity() {
     }
 
     private fun startVpn() {
-        val prefs = getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val prefs = getEncryptedPrefs()
         val server = prefs.getString("server", "") ?: ""
         val link = prefs.getString("link", "") ?: ""
         val wgPrivKey = prefs.getString("wg_privkey", "") ?: ""
@@ -160,7 +217,7 @@ class MainActivity : Activity() {
     }
 
     private fun launchVpn() {
-        val prefs = getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val prefs = getEncryptedPrefs()
         val intent = Intent(this, TunnelVpnService::class.java).apply {
             action = TunnelVpnService.ACTION_START
             putExtra("server", prefs.getString("server", ""))
@@ -171,6 +228,7 @@ class MainActivity : Activity() {
             putExtra("wg_dns", prefs.getString("wg_dns", "1.1.1.1"))
             putExtra("wg_pubkey", prefs.getString("wg_pubkey", ""))
             putExtra("dtls_port", prefs.getInt("dtls_port", 56000))
+            putExtra("dtls_fingerprint", prefs.getString("dtls_fingerprint", ""))
         }
         startForegroundService(intent)
         Toast.makeText(this, "Connecting...", Toast.LENGTH_SHORT).show()

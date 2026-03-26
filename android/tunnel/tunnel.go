@@ -8,6 +8,7 @@ package tunnel
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/hex"
@@ -42,6 +43,7 @@ var (
 	running      bool
 	logCallback  func(string)
 	wgDevice     *device.Device
+	wgCloseOnce  sync.Once
 )
 
 // SetLogCallback sets a callback for log messages (called from Android)
@@ -122,23 +124,31 @@ func (t *androidTUN) Close() error {
 // connections: number of parallel TURN connections (0 = auto)
 // wgPrivKey: WireGuard client private key (base64)
 // serverPubKey: WireGuard server public key (base64)
-func Start(tunFd int, peerAddr, vkLink, yandexLink string, connections int, wgPrivKey, serverPubKey string) error {
+func Start(tunFd int, peerAddr, vkLink, yandexLink string, connections int, wgPrivKey, serverPubKey, dtlsFingerprint string) error {
 	tunnelMu.Lock()
 	if running {
 		tunnelMu.Unlock()
 		return fmt.Errorf("tunnel already running")
 	}
+	running = true // set immediately to prevent TOCTOU race
 	tunnelMu.Unlock()
 
+	resetRunning := func() { tunnelMu.Lock(); running = false; tunnelMu.Unlock() }
+
 	if peerAddr == "" {
+		resetRunning()
 		return fmt.Errorf("peer address required")
 	}
 	if vkLink == "" && yandexLink == "" {
+		resetRunning()
 		return fmt.Errorf("VK or Yandex link required")
 	}
 	if wgPrivKey == "" || serverPubKey == "" {
+		resetRunning()
 		return fmt.Errorf("WireGuard keys required")
 	}
+
+	tunnelDTLSFingerprint = strings.ToLower(dtlsFingerprint)
 
 	peer, err := net.ResolveUDPAddr("udp", peerAddr)
 	if err != nil {
@@ -148,10 +158,12 @@ func Start(tunFd int, peerAddr, vkLink, yandexLink string, connections int, wgPr
 	// Decode WG keys from base64 to hex (wireguard-go IPC format)
 	privBytes, err := base64.StdEncoding.DecodeString(wgPrivKey)
 	if err != nil || len(privBytes) != 32 {
+		resetRunning()
 		return fmt.Errorf("invalid WG private key")
 	}
 	pubBytes, err := base64.StdEncoding.DecodeString(serverPubKey)
 	if err != nil || len(pubBytes) != 32 {
+		resetRunning()
 		return fmt.Errorf("invalid WG public key")
 	}
 
@@ -211,8 +223,8 @@ func Start(tunFd int, peerAddr, vkLink, yandexLink string, connections int, wgPr
 		return fmt.Errorf("WireGuard up: %s", err)
 	}
 
+	wgCloseOnce = sync.Once{} // reset for new tunnel
 	tunnelMu.Lock()
-	running = true
 	tunnelCtx = ctx
 	tunnelCancel = cancel
 	wgDevice = dev
@@ -277,7 +289,7 @@ func Start(tunFd int, peerAddr, vkLink, yandexLink string, connections int, wgPr
 		}
 
 		wg.Wait()
-		dev.Close()
+		wgCloseOnce.Do(func() { dev.Close() })
 		tunnelMu.Lock()
 		running = false
 		wgDevice = nil
@@ -295,10 +307,12 @@ func Stop() {
 	if running && tunnelCancel != nil {
 		tunnelCancel()
 	}
-	if wgDevice != nil {
-		wgDevice.Close()
-		wgDevice = nil
-	}
+	wgCloseOnce.Do(func() {
+		if wgDevice != nil {
+			wgDevice.Close()
+			wgDevice = nil
+		}
+	})
 }
 
 // IsRunning returns true if tunnel is active
@@ -581,6 +595,8 @@ type connectedUDPConn struct{ *net.UDPConn }
 
 func (c *connectedUDPConn) WriteTo(p []byte, _ net.Addr) (int, error) { return c.Write(p) }
 
+var tunnelDTLSFingerprint string
+
 func dtlsFunc(ctx context.Context, pktConn net.PacketConn, peer *net.UDPAddr) (net.Conn, error) {
 	cert, err := selfsign.GenerateSelfSigned()
 	if err != nil {
@@ -592,6 +608,23 @@ func dtlsFunc(ctx context.Context, pktConn net.PacketConn, peer *net.UDPAddr) (n
 		ExtendedMasterSecret:  dtls.RequireExtendedMasterSecret,
 		CipherSuites:          []dtls.CipherSuiteID{dtls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256},
 		ConnectionIDGenerator: dtls.OnlySendCIDGenerator(),
+		VerifyConnection: func(state *dtls.State) error {
+			if tunnelDTLSFingerprint == "" {
+				logMsg("WARNING: DTLS fingerprint pinning disabled — vulnerable to MITM")
+				return nil
+			}
+			certs := state.PeerCertificates
+			if len(certs) == 0 {
+				return fmt.Errorf("no server certificate received")
+			}
+			hash := sha256.Sum256(certs[0])
+			got := hex.EncodeToString(hash[:])
+			if got != tunnelDTLSFingerprint {
+				return fmt.Errorf("DTLS fingerprint mismatch: got %s, want %s", got, tunnelDTLSFingerprint)
+			}
+			logMsg("DTLS certificate fingerprint verified: %s", got)
+			return nil
+		},
 	}
 	ctx1, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
@@ -720,16 +753,27 @@ func oneTurnConnection(ctx context.Context, params *turnParams, peer *net.UDPAdd
 	turnAddr = turnUDP.String()
 	logMsg("TURN server: %s", turnUDP.IP)
 
+	var turnConn net.PacketConn
 	var d net.Dialer
 	ctx1, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	tcpConn, err1 := d.DialContext(ctx1, "tcp", turnAddr)
-	if err1 != nil {
-		err = fmt.Errorf("TURN connect: %s", err1)
-		return
+	if params.udp {
+		udpConn, err2 := net.DialUDP("udp", nil, turnUDP)
+		if err2 != nil {
+			err = fmt.Errorf("TURN UDP connect: %s", err2)
+			return
+		}
+		defer udpConn.Close()
+		turnConn = &connectedUDPConn{udpConn}
+	} else {
+		tcpConn, err2 := d.DialContext(ctx1, "tcp", turnAddr)
+		if err2 != nil {
+			err = fmt.Errorf("TURN connect: %s", err2)
+			return
+		}
+		defer tcpConn.Close()
+		turnConn = turn.NewSTUNConn(tcpConn)
 	}
-	defer tcpConn.Close()
-	turnConn := turn.NewSTUNConn(tcpConn)
 
 	var af turn.RequestedAddressFamily
 	if peer.IP.To4() != nil {

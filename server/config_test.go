@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/base64"
 	"os"
 	"path/filepath"
 	"testing"
@@ -113,6 +114,53 @@ func TestClientConfig(t *testing.T) {
 	}
 	if !contains(conf, "AllowedIPs = 0.0.0.0/0") {
 		t.Fatal("missing AllowedIPs")
+	}
+}
+
+func TestWgGenKey(t *testing.T) {
+	priv, pub, err := wgGenKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify base64 encoding and key lengths
+	privBytes, err := base64.StdEncoding.DecodeString(priv)
+	if err != nil {
+		t.Fatalf("invalid base64 private key: %v", err)
+	}
+	if len(privBytes) != 32 {
+		t.Fatalf("expected 32-byte private key, got %d", len(privBytes))
+	}
+
+	pubBytes, err := base64.StdEncoding.DecodeString(pub)
+	if err != nil {
+		t.Fatalf("invalid base64 public key: %v", err)
+	}
+	if len(pubBytes) != 32 {
+		t.Fatalf("expected 32-byte public key, got %d", len(pubBytes))
+	}
+
+	// Verify clamping
+	if privBytes[0]&7 != 0 {
+		t.Fatal("private key not clamped: low bits")
+	}
+	if privBytes[31]&128 != 0 {
+		t.Fatal("private key not clamped: high bit")
+	}
+	if privBytes[31]&64 == 0 {
+		t.Fatal("private key not clamped: bit 254")
+	}
+
+	// Verify uniqueness
+	priv2, pub2, err := wgGenKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if priv == priv2 {
+		t.Fatal("generated duplicate private keys")
+	}
+	if pub == pub2 {
+		t.Fatal("generated duplicate public keys")
 	}
 }
 

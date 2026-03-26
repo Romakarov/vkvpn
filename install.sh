@@ -40,6 +40,9 @@ if [ ! -f /etc/vkvpn/config.json ]; then
   WG_PUB=$(echo "$WG_PRIV" | wg pubkey)
   ADMIN_PASS=$(head -c 16 /dev/urandom | base64 | tr -dc 'a-zA-Z0-9' | head -c 16)
 
+  # Hash password with bcrypt via python3 (never store plaintext)
+  ADMIN_HASH=$(python3 -c "import bcrypt; print(bcrypt.hashpw(b'${ADMIN_PASS}', bcrypt.gensalt()).decode())" 2>/dev/null || echo "")
+
   cat > /etc/vkvpn/config.json <<CONF
 {
   "server_ip": "$SERVER_IP",
@@ -49,7 +52,7 @@ if [ ! -f /etc/vkvpn/config.json ]; then
   "server_public_key": "$WG_PUB",
   "dns": "1.1.1.1, 8.8.8.8",
   "dtls_port": 56000,
-  "admin_pass": "$ADMIN_PASS",
+  "admin_pass_hash": "$ADMIN_HASH",
   "active_link": "",
   "link_type": "",
   "clients": []
@@ -102,6 +105,10 @@ ExecStart=/opt/vkvpn/server -config /etc/vkvpn/config.json -ip $SERVER_IP -web 0
 Restart=always
 RestartSec=5
 LimitNOFILE=65535
+NoNewPrivileges=true
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/etc/vkvpn /etc/wireguard
 
 [Install]
 WantedBy=multi-user.target
