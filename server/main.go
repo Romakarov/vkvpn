@@ -208,8 +208,11 @@ func (c *Config) applyWireGuard() error {
 		return fmt.Errorf("write wg0.conf: %w", err)
 	}
 
-	// Restart WireGuard with new config
-	exec.Command("systemctl", "restart", "wg-quick@wg0").Run()
+	// Restart WireGuard with new config (sudo needed when running as non-root)
+	if err := exec.Command("sudo", "systemctl", "restart", "wg-quick@wg0").Run(); err != nil {
+		// Fallback: try without sudo (when running as root)
+		exec.Command("systemctl", "restart", "wg-quick@wg0").Run()
+	}
 	return nil
 }
 
@@ -437,7 +440,7 @@ func runDTLSServer(ctx context.Context, listenAddr string, connectAddr string) {
 		Certificates:          []tls.Certificate{certificate},
 		ExtendedMasterSecret:  dtls.RequireExtendedMasterSecret,
 		CipherSuites:          []dtls.CipherSuiteID{dtls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256},
-		ConnectionIDGenerator: dtls.OnlySendCIDGenerator(),
+		ConnectionIDGenerator: dtls.RandomCIDGenerator(8), // 8-byte CID for NAT rebinding resilience
 	}
 
 	addr, err := net.ResolveUDPAddr("udp", listenAddr)
