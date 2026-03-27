@@ -40,8 +40,13 @@ if [ ! -f /etc/vkvpn/config.json ]; then
   WG_PUB=$(echo "$WG_PRIV" | wg pubkey)
   ADMIN_PASS=$(head -c 16 /dev/urandom | base64 | tr -dc 'a-zA-Z0-9' | head -c 16)
 
-  # Hash password with bcrypt via python3 (never store plaintext)
-  ADMIN_HASH=$(python3 -c "import bcrypt; print(bcrypt.hashpw(b'${ADMIN_PASS}', bcrypt.gensalt()).decode())" 2>/dev/null || echo "")
+  # Hash password with bcrypt via python3 (use $2a$ prefix for Go compatibility)
+  ADMIN_HASH=$(python3 -c "
+import bcrypt
+h = bcrypt.hashpw(b'${ADMIN_PASS}', bcrypt.gensalt()).decode()
+# Go's x/crypto/bcrypt only accepts \$2a\$ prefix, not \$2b\$
+print(h.replace('\$2b\$', '\$2a\$', 1))
+" 2>/dev/null || echo "")
 
   cat > /etc/vkvpn/config.json <<CONF
 {

@@ -209,9 +209,9 @@ func (c *Config) applyWireGuard() error {
 	}
 
 	// Restart WireGuard with new config (sudo needed when running as non-root)
-	if err := exec.Command("sudo", "systemctl", "restart", "wg-quick@wg0").Run(); err != nil {
+	if err := exec.Command("/usr/bin/sudo", "/usr/bin/systemctl", "restart", "wg-quick@wg0").Run(); err != nil {
 		// Fallback: try without sudo (when running as root)
-		exec.Command("systemctl", "restart", "wg-quick@wg0").Run()
+		exec.Command("/usr/bin/systemctl", "restart", "wg-quick@wg0").Run()
 	}
 	return nil
 }
@@ -726,7 +726,7 @@ func setSessionCookie(w http.ResponseWriter, r *http.Request) {
 		Path:     "/",
 		MaxAge:   86400 * 30,
 		HttpOnly: true,
-		SameSite: http.SameSiteStrictMode,
+		SameSite: http.SameSiteLaxMode,
 		Secure:   r.TLS != nil,
 	})
 }
@@ -1433,7 +1433,18 @@ func main() {
 		fileServer.ServeHTTP(w, r)
 	})
 
-	server := &http.Server{Addr: *webAddr, Handler: mux}
+	// Security headers middleware
+	secureHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("Referrer-Policy", "no-referrer")
+		if r.TLS != nil {
+			w.Header().Set("Strict-Transport-Security", "max-age=31536000")
+		}
+		mux.ServeHTTP(w, r)
+	})
+
+	server := &http.Server{Addr: *webAddr, Handler: secureHandler}
 	go func() {
 		<-ctx.Done()
 		server.Shutdown(context.Background())

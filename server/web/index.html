@@ -344,7 +344,13 @@ function toast(msg, type='success') {
 
 async function api(path, opts) {
   try {
+    opts = opts || {};
+    opts.credentials = 'same-origin';
     const resp = await fetch(API + path, opts);
+    if (resp.status === 401) {
+      toast('Session expired — reload with token', 'error');
+      throw new Error('unauthorized');
+    }
     const data = await resp.json();
     if (!resp.ok) throw new Error(data.error || resp.statusText);
     return data;
