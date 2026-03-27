@@ -50,15 +50,90 @@
             android:textColor="#555577"
             android:textSize="14sp" />
 
-        <Button
-            android:id="@+id/btn_reset"
-            android:layout_width="wrap_content"
-            android:layout_height="40dp"
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
             android:layout_marginTop="16dp"
-            android:background="@android:color/transparent"
-            android:text="Reset Config"
-            android:textColor="#555577"
-            android:textSize="13sp" />
+            android:gravity="center"
+            android:orientation="horizontal">
+
+            <Button
+                android:id="@+id/btn_reset"
+                android:layout_width="wrap_content"
+                android:layout_height="40dp"
+                android:background="@android:color/transparent"
+                android:text="Reset"
+                android:textColor="#555577"
+                android:textSize="13sp" />
+
+            <Button
+                android:id="@+id/btn_logs"
+                android:layout_width="wrap_content"
+                android:layout_height="40dp"
+                android:layout_marginStart="16dp"
+                android:background="@android:color/transparent"
+                android:text="📋 Logs"
+                android:textColor="#8888aa"
+                android:textSize="13sp" />
+        </LinearLayout>
+
+        <!-- Log viewer (hidden by default) -->
+        <ScrollView
+            android:id="@+id/log_viewer"
+            android:layout_width="match_parent"
+            android:layout_height="200dp"
+            android:layout_marginTop="8dp"
+            android:background="@drawable/input_bg"
+            android:visibility="gone">
+
+            <TextView
+                android:id="@+id/tv_logs"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:fontFamily="monospace"
+                android:padding="8dp"
+                android:textColor="#aaaacc"
+                android:textSize="11sp" />
+        </ScrollView>
+
+        <LinearLayout
+            android:id="@+id/log_buttons"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:gravity="center"
+            android:orientation="horizontal"
+            android:visibility="gone">
+
+            <Button
+                android:id="@+id/btn_copy_logs"
+                android:layout_width="wrap_content"
+                android:layout_height="36dp"
+                android:background="@android:color/transparent"
+                android:text="Copy"
+                android:textColor="#8888aa"
+                android:textSize="12sp" />
+
+            <Button
+                android:id="@+id/btn_save_logs"
+                android:layout_width="wrap_content"
+                android:layout_height="36dp"
+                android:layout_marginStart="16dp"
+                android:background="@android:color/transparent"
+                android:text="Save to file"
+                android:textColor="#8888aa"
+                android:textSize="12sp" />
+
+            <Button
+                android:id="@+id/btn_refresh_logs"
+                android:layout_width="wrap_content"
+                android:layout_height="36dp"
+                android:layout_marginStart="16dp"
+                android:background="@android:color/transparent"
+                android:text="Refresh"
+                android:textColor="#8888aa"
+                android:textSize="12sp" />
+        </LinearLayout>
 
     </LinearLayout>
 
