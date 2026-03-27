@@ -46,16 +46,138 @@ var (
 	wgCloseOnce  sync.Once
 )
 
+// ─── Remote Logging ───
+
+type remoteLogger struct {
+	mu       sync.Mutex
+	entries  []logEntry
+	serverURL string
+	device    string
+	ctx       context.Context
+	cancel    context.CancelFunc
+}
+
+type logEntry struct {
+	Time    string `json:"time"`
+	Message string `json:"message"`
+	Level   string `json:"level"`
+}
+
+var rlog = &remoteLogger{}
+
 // SetLogCallback sets a callback for log messages (called from Android)
 func SetLogCallback(cb func(string)) {
 	logCallback = cb
 }
 
+// SetRemoteLog configures remote log shipping to VPS.
+// Call from Android: tunnel.SetRemoteLog("https://VPS:8080", "device_name")
+func SetRemoteLog(serverURL, deviceName string) {
+	rlog.mu.Lock()
+	defer rlog.mu.Unlock()
+	if rlog.cancel != nil {
+		rlog.cancel()
+	}
+	rlog.serverURL = strings.TrimRight(serverURL, "/")
+	rlog.device = deviceName
+	rlog.ctx, rlog.cancel = context.WithCancel(context.Background())
+	// Start periodic flush goroutine
+	go func() {
+		ticker := time.NewTicker(10 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-rlog.ctx.Done():
+				rlog.flush() // final flush
+				return
+			case <-ticker.C:
+				rlog.flush()
+			}
+		}
+	}()
+}
+
+// GetLogs returns all buffered logs as JSON string (for Android UI)
+func GetLogs() string {
+	rlog.mu.Lock()
+	defer rlog.mu.Unlock()
+	b, _ := json.Marshal(rlog.entries)
+	return string(b)
+}
+
+// ClearLogs clears the log buffer
+func ClearLogs() {
+	rlog.mu.Lock()
+	defer rlog.mu.Unlock()
+	rlog.entries = nil
+}
+
+func (r *remoteLogger) add(level, msg string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	entry := logEntry{
+		Time:    time.Now().Format("15:04:05.000"),
+		Message: msg,
+		Level:   level,
+	}
+	r.entries = append(r.entries, entry)
+	// Keep max 500 entries in memory
+	if len(r.entries) > 500 {
+		r.entries = r.entries[len(r.entries)-500:]
+	}
+}
+
+func (r *remoteLogger) flush() {
+	r.mu.Lock()
+	if len(r.entries) == 0 || r.serverURL == "" {
+		r.mu.Unlock()
+		return
+	}
+	// Copy and clear
+	toSend := make([]logEntry, len(r.entries))
+	copy(toSend, r.entries)
+	device := r.device
+	url := r.serverURL + "/api/device-logs"
+	r.mu.Unlock()
+
+	payload, _ := json.Marshal(map[string]interface{}{
+		"device":  device,
+		"entries": toSend,
+	})
+
+	client := &http.Client{
+		Timeout: 5 * time.Second,
+		Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}},
+	}
+	resp, err := client.Post(url, "application/json", bytes.NewReader(payload))
+	if err == nil {
+		resp.Body.Close()
+		if resp.StatusCode == 200 {
+			// Successfully sent — clear sent entries
+			r.mu.Lock()
+			if len(r.entries) >= len(toSend) {
+				r.entries = r.entries[len(toSend):]
+			}
+			r.mu.Unlock()
+		}
+	}
+}
+
 func logMsg(format string, args ...interface{}) {
 	msg := fmt.Sprintf(format, args...)
 	log.Print(msg)
+	rlog.add("info", msg)
 	if logCallback != nil {
 		logCallback(msg)
+	}
+}
+
+func logErr(format string, args ...interface{}) {
+	msg := fmt.Sprintf(format, args...)
+	log.Print("ERROR: " + msg)
+	rlog.add("error", msg)
+	if logCallback != nil {
+		logCallback("ERROR: " + msg)
 	}
 }
 
@@ -674,13 +796,15 @@ func oneDtlsConnection(ctx context.Context, peer *net.UDPAddr, listenConn net.Pa
 			}
 		}
 	}()
+	logMsg("[DTLS] Connecting to peer %s...", peer)
 	dtlsConn, err1 := dtlsFunc(dtlsctx, conn1, peer)
 	if err1 != nil {
 		err = fmt.Errorf("DTLS connect: %s", err1)
+		logErr("[DTLS] Handshake FAILED: %s", err1)
 		return
 	}
 	defer dtlsConn.Close()
-	logMsg("DTLS connected")
+	logMsg("[DTLS] Connected to %s! Handshake OK", peer)
 	if okchan != nil {
 		go func() {
 			for {
@@ -749,14 +873,18 @@ func oneDtlsConnection(ctx context.Context, peer *net.UDPAddr, listenConn net.Pa
 func oneTurnConnection(ctx context.Context, params *turnParams, peer *net.UDPAddr, conn2 net.PacketConn, c chan<- error) {
 	var err error
 	defer func() { c <- err }()
+	logMsg("[TURN] Getting credentials for link=%s", params.link)
 	user, pass, url, err1 := params.getCreds(params.link)
 	if err1 != nil {
 		err = fmt.Errorf("TURN creds: %s", err1)
+		logErr("[TURN] Credential fetch FAILED: %s", err1)
 		return
 	}
+	logMsg("[TURN] Credentials OK: user=%s, turn_addr=%s", user, url)
 	urlhost, urlport, err1 := net.SplitHostPort(url)
 	if err1 != nil {
 		err = fmt.Errorf("TURN address parse: %s (url=%s)", err1, url)
+		logErr("[TURN] Address parse FAILED: %s", err1)
 		return
 	}
 	if params.host != "" {
@@ -769,32 +897,39 @@ func oneTurnConnection(ctx context.Context, params *turnParams, peer *net.UDPAdd
 	turnUDP, err1 := net.ResolveUDPAddr("udp", turnAddr)
 	if err1 != nil {
 		err = fmt.Errorf("TURN resolve: %s", err1)
+		logErr("[TURN] DNS resolve FAILED: %s", err1)
 		return
 	}
 	turnAddr = turnUDP.String()
-	logMsg("TURN server: %s", turnUDP.IP)
+	logMsg("[TURN] Resolved: %s → %s", url, turnAddr)
 
 	var turnConn net.PacketConn
 	var d net.Dialer
 	ctx1, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
+	transport := "TCP"
 	if params.udp {
+		transport = "UDP"
 		udpConn, err2 := net.DialUDP("udp", nil, turnUDP)
 		if err2 != nil {
 			err = fmt.Errorf("TURN UDP connect: %s", err2)
+			logErr("[TURN] UDP dial FAILED: %s", err2)
 			return
 		}
 		defer udpConn.Close()
 		turnConn = &connectedUDPConn{udpConn}
 	} else {
+		logMsg("[TURN] Connecting TCP to %s...", turnAddr)
 		tcpConn, err2 := d.DialContext(ctx1, "tcp", turnAddr)
 		if err2 != nil {
 			err = fmt.Errorf("TURN connect: %s", err2)
+			logErr("[TURN] TCP dial FAILED: %s", err2)
 			return
 		}
 		defer tcpConn.Close()
 		turnConn = turn.NewSTUNConn(tcpConn)
 	}
+	logMsg("[TURN] Connected via %s to %s", transport, turnAddr)
 
 	var af turn.RequestedAddressFamily
 	if peer.IP.To4() != nil {
@@ -802,6 +937,7 @@ func oneTurnConnection(ctx context.Context, params *turnParams, peer *net.UDPAdd
 	} else {
 		af = turn.RequestedAddressFamilyIPv6
 	}
+	logMsg("[TURN] Creating TURN client (user=%s, peer=%s)...", user, peer)
 	tc, err1 := turn.NewClient(&turn.ClientConfig{
 		STUNServerAddr: turnAddr, TURNServerAddr: turnAddr,
 		Conn: turnConn, Username: user, Password: pass,
@@ -810,17 +946,21 @@ func oneTurnConnection(ctx context.Context, params *turnParams, peer *net.UDPAdd
 	})
 	if err1 != nil {
 		err = fmt.Errorf("TURN client: %s", err1)
+		logErr("[TURN] Client create FAILED: %s", err1)
 		return
 	}
 	defer tc.Close()
+	logMsg("[TURN] Client created, calling Listen()...")
 	tc.Listen()
+	logMsg("[TURN] Listen OK, calling Allocate()...")
 	relay, err1 := tc.Allocate()
 	if err1 != nil {
 		err = fmt.Errorf("TURN allocate: %s", err1)
+		logErr("[TURN] Allocate FAILED: %s", err1)
 		return
 	}
 	defer relay.Close()
-	logMsg("Relay: %s", relay.LocalAddr())
+	logMsg("[TURN] Allocate OK! Relay address: %s → sending to peer %s", relay.LocalAddr(), peer)
 
 	var wg sync.WaitGroup
 	wg.Add(2)

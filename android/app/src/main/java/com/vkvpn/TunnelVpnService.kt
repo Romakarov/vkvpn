@@ -91,6 +91,8 @@ class TunnelVpnService : VpnService() {
                 val peerAddr = "$server:$dtlsPort"
 
                 Log.i(TAG, "Starting tunnel to $peerAddr")
+                // Enable remote logging to VPS
+                Tunnel.setRemoteLog("https://$server:8080", wgAddress)
                 Tunnel.start(
                     tunFd.toLong(), peerAddr,
                     vkLink, yaLink,

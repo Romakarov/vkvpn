@@ -1169,6 +1169,120 @@ func apiLogs(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(entries)
 }
 
+// ─── Device Logs ───
+
+type DeviceLogEntry struct {
+	Device    string `json:"device"`
+	Time      string `json:"time"`
+	Message   string `json:"message"`
+	Level     string `json:"level"` // info, warn, error
+	Received  int64  `json:"received"`
+}
+
+type DeviceLogStore struct {
+	mu      sync.RWMutex
+	entries []DeviceLogEntry
+	max     int
+}
+
+var deviceLogs = &DeviceLogStore{max: 2000}
+
+func (s *DeviceLogStore) Add(entries []DeviceLogEntry) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now().Unix()
+	for i := range entries {
+		entries[i].Received = now
+	}
+	s.entries = append(s.entries, entries...)
+	// Trim to max
+	if len(s.entries) > s.max {
+		s.entries = s.entries[len(s.entries)-s.max:]
+	}
+}
+
+func (s *DeviceLogStore) Get(device string, since int64) []DeviceLogEntry {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var result []DeviceLogEntry
+	for _, e := range s.entries {
+		if since > 0 && e.Received <= since {
+			continue
+		}
+		if device != "" && e.Device != device {
+			continue
+		}
+		result = append(result, e)
+	}
+	return result
+}
+
+func (s *DeviceLogStore) Cleanup(maxAge time.Duration) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cutoff := time.Now().Add(-maxAge).Unix()
+	n := 0
+	for _, e := range s.entries {
+		if e.Received > cutoff {
+			s.entries[n] = e
+			n++
+		}
+	}
+	s.entries = s.entries[:n]
+}
+
+// POST /api/device-logs — receive logs from device (no auth needed — device sends its name)
+func apiDeviceLogsPush(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST only", http.StatusMethodNotAllowed)
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1MB max
+	var req struct {
+		Device  string           `json:"device"`
+		Entries []DeviceLogEntry `json:"entries"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if req.Device == "" || len(req.Entries) == 0 {
+		http.Error(w, "device and entries required", http.StatusBadRequest)
+		return
+	}
+	// Validate and set device name on all entries
+	for i := range req.Entries {
+		req.Entries[i].Device = req.Device
+	}
+	deviceLogs.Add(req.Entries)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
+// GET /api/device-logs — view device logs (auth required)
+func apiDeviceLogsGet(w http.ResponseWriter, r *http.Request) {
+	device := r.URL.Query().Get("device")
+	var since int64
+	if v := r.URL.Query().Get("since"); v != "" {
+		since, _ = strconv.ParseInt(v, 10, 64)
+	}
+	entries := deviceLogs.Get(device, since)
+	if entries == nil {
+		entries = []DeviceLogEntry{}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(entries)
+}
+
+func init() {
+	// Cleanup device logs every hour (keep 24h)
+	go func() {
+		for range time.Tick(time.Hour) {
+			deviceLogs.Cleanup(24 * time.Hour)
+		}
+	}()
+}
+
 // ─── Health check ───
 
 var (
@@ -1423,6 +1537,13 @@ func main() {
 	mux.HandleFunc("/api/clients/appconfig", authMiddleware(apiAppConfig))
 	mux.HandleFunc("/api/logs", authMiddleware(apiLogs))
 	mux.HandleFunc("/api/metrics", authMiddleware(apiMetrics))
+	mux.HandleFunc("/api/device-logs", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			apiDeviceLogsPush(w, r) // no auth — devices push logs
+		} else {
+			authMiddleware(apiDeviceLogsGet)(w, r) // auth required to view
+		}
+	})
 
 	webContent, _ := fs.Sub(webFS, "web")
 	fileServer := http.FileServer(http.FS(webContent))

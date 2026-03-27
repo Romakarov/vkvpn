@@ -1,12 +1,15 @@
 package com.vkvpn
 
 import android.Manifest
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.net.VpnService
 import android.os.Bundle
+import android.os.Environment
 import android.view.View
 import android.widget.*
 import androidx.appcompat.app.AppCompatActivity
@@ -45,6 +48,13 @@ class MainActivity : AppCompatActivity() {
     private lateinit var etConfig: EditText
     private lateinit var btnImport: Button
     private lateinit var btnScanQr: Button
+    private lateinit var btnLogs: Button
+    private lateinit var logViewer: View
+    private lateinit var logButtons: View
+    private lateinit var tvLogs: TextView
+    private lateinit var btnCopyLogs: Button
+    private lateinit var btnSaveLogs: Button
+    private lateinit var btnRefreshLogs: Button
 
     // QR scanner launcher
     private val qrLauncher = registerForActivityResult(ScanContract()) { result: ScanIntentResult ->
@@ -66,6 +76,13 @@ class MainActivity : AppCompatActivity() {
         etConfig = findViewById(R.id.et_config)
         btnImport = findViewById(R.id.btn_import)
         btnScanQr = findViewById(R.id.btn_scan_qr)
+        btnLogs = findViewById(R.id.btn_logs)
+        logViewer = findViewById(R.id.log_viewer)
+        logButtons = findViewById(R.id.log_buttons)
+        tvLogs = findViewById(R.id.tv_logs)
+        btnCopyLogs = findViewById(R.id.btn_copy_logs)
+        btnSaveLogs = findViewById(R.id.btn_save_logs)
+        btnRefreshLogs = findViewById(R.id.btn_refresh_logs)
 
         btnConnect.setOnClickListener {
             if (TunnelVpnService.isRunning) {
@@ -91,6 +108,11 @@ class MainActivity : AppCompatActivity() {
                 launchQrScanner()
             }
         }
+
+        btnLogs.setOnClickListener { toggleLogs() }
+        btnCopyLogs.setOnClickListener { copyLogs() }
+        btnSaveLogs.setOnClickListener { saveLogs() }
+        btnRefreshLogs.setOnClickListener { refreshLogs() }
 
         btnReset.setOnClickListener {
             if (TunnelVpnService.isRunning) {
@@ -241,5 +263,57 @@ class MainActivity : AppCompatActivity() {
         }
         startService(intent)
         btnConnect.postDelayed({ updateUI() }, 1000)
+    }
+
+    // ─── Log Viewer ───
+
+    private var logsVisible = false
+
+    private fun toggleLogs() {
+        logsVisible = !logsVisible
+        if (logsVisible) {
+            logViewer.visibility = View.VISIBLE
+            logButtons.visibility = View.VISIBLE
+            refreshLogs()
+        } else {
+            logViewer.visibility = View.GONE
+            logButtons.visibility = View.GONE
+        }
+    }
+
+    private fun refreshLogs() {
+        try {
+            val logsJson = tunnel.Tunnel.getLogs()
+            val arr = org.json.JSONArray(logsJson)
+            val sb = StringBuilder()
+            for (i in 0 until arr.length()) {
+                val e = arr.getJSONObject(i)
+                val time = e.optString("time", "")
+                val level = e.optString("level", "info")
+                val msg = e.optString("message", "")
+                val prefix = if (level == "error") "❌" else "•"
+                sb.append("$time $prefix $msg\n")
+            }
+            tvLogs.text = if (sb.isEmpty()) "No logs yet. Connect to see tunnel activity." else sb.toString()
+        } catch (e: Exception) {
+            tvLogs.text = "Error reading logs: ${e.message}"
+        }
+    }
+
+    private fun copyLogs() {
+        val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        clipboard.setPrimaryClip(ClipData.newPlainText("VKVPN Logs", tvLogs.text))
+        Toast.makeText(this, "Logs copied!", Toast.LENGTH_SHORT).show()
+    }
+
+    private fun saveLogs() {
+        try {
+            val dir = getExternalFilesDir(null) ?: filesDir
+            val file = java.io.File(dir, "vkvpn-logs-${System.currentTimeMillis()}.txt")
+            file.writeText(tvLogs.text.toString())
+            Toast.makeText(this, "Saved: ${file.name}", Toast.LENGTH_LONG).show()
+        } catch (e: Exception) {
+            Toast.makeText(this, "Save error: ${e.message}", Toast.LENGTH_LONG).show()
+        }
     }
 }
