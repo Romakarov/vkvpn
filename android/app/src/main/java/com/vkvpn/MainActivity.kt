@@ -164,6 +164,10 @@ class MainActivity : AppCompatActivity() {
             prefs.putInt("dtls_port", json.optInt("dtls_port", 56000))
             prefs.putString("dtls_fingerprint", json.optString("dtls_fingerprint", ""))
             prefs.putString("name", json.optString("name", ""))
+            // Server-provided TURN credentials (optional)
+            prefs.putString("turn_username", json.optString("turn_username", ""))
+            prefs.putString("turn_password", json.optString("turn_password", ""))
+            prefs.putString("turn_address", json.optString("turn_address", ""))
             prefs.apply()
 
             Toast.makeText(this, "Config imported! ✓", Toast.LENGTH_SHORT).show()
@@ -251,6 +255,9 @@ class MainActivity : AppCompatActivity() {
             putExtra("wg_pubkey", prefs.getString("wg_pubkey", ""))
             putExtra("dtls_port", prefs.getInt("dtls_port", 56000))
             putExtra("dtls_fingerprint", prefs.getString("dtls_fingerprint", ""))
+            putExtra("turn_username", prefs.getString("turn_username", ""))
+            putExtra("turn_password", prefs.getString("turn_password", ""))
+            putExtra("turn_address", prefs.getString("turn_address", ""))
         }
         startForegroundService(intent)
         Toast.makeText(this, "Connecting...", Toast.LENGTH_SHORT).show()

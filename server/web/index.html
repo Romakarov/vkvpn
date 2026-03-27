@@ -272,6 +272,20 @@ input:focus, select:focus { border-color: var(--accent); }
     </div>
   </div>
 
+  <!-- VK Accounts -->
+  <div class="card full" style="margin-bottom:16px">
+    <h2>VK Accounts</h2>
+    <p style="font-size:13px;color:var(--text2);margin-bottom:12px">
+      Server authenticates with VK to extract TURN credentials. Clients receive ready credentials.
+    </p>
+    <div id="vk-accounts-list" style="margin-bottom:12px"></div>
+    <div id="vk-creds-status" style="margin-bottom:12px;font-size:13px;color:var(--text2)"></div>
+    <div style="display:flex;gap:8px">
+      <button class="btn btn-primary" onclick="addVKAccount()">+ Add VK Account</button>
+      <button class="btn btn-sm" onclick="refreshVKCreds()" style="align-self:center">Refresh Credentials</button>
+    </div>
+  </div>
+
   <!-- Client management -->
   <div class="card full" style="margin-bottom:16px">
     <h2>Clients</h2>
@@ -601,16 +615,89 @@ function esc(s) {
   return d.innerHTML;
 }
 
+// ─── VK Accounts ───
+
+async function loadVKAccounts() {
+  try {
+    const accounts = await api('/api/vk/accounts');
+    const list = document.getElementById('vk-accounts-list');
+    if (!accounts || accounts.length === 0) {
+      list.innerHTML = '<div style="color:var(--text2);padding:8px 0;font-size:13px">No VK accounts linked</div>';
+    } else {
+      list.innerHTML = accounts.map(a => `
+        <div style="display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--border)">
+          <span style="flex:1;font-size:14px">
+            <strong>${esc(a.name)}</strong>
+            <span style="color:${a.enabled ? 'var(--green)' : 'var(--red)'}"> ${a.enabled ? 'active' : 'disabled'}</span>
+            ${a.last_error ? `<span style="color:var(--red);font-size:12px"> — ${esc(a.last_error)}</span>` : ''}
+          </span>
+          <button class="btn btn-sm btn-danger" onclick="deleteVKAccount('${esc(a.id)}')" style="padding:4px 8px;font-size:12px">Remove</button>
+        </div>
+      `).join('');
+    }
+  } catch(e) {}
+
+  // Load credential status
+  try {
+    const c = await api('/api/vk/credentials');
+    const el = document.getElementById('vk-creds-status');
+    if (c.has_creds) {
+      const fetched = new Date(c.fetched_at).toLocaleTimeString();
+      const expires = new Date(c.expires_at).toLocaleTimeString();
+      el.innerHTML = `TURN credentials: <strong style="color:var(--green)">OK</strong> — user=${esc(c.username)}, addr=${esc(c.address)}, fetched ${fetched}, expires ${expires}`;
+    } else if (c.error) {
+      el.innerHTML = `TURN credentials: <strong style="color:var(--red)">Error</strong> — ${esc(c.error)}`;
+    } else {
+      el.innerHTML = 'TURN credentials: <span style="color:var(--text2)">none</span>';
+    }
+  } catch(e) {}
+}
+
+async function addVKAccount() {
+  try {
+    const data = await api('/api/vk/auth-url');
+    if (data.url) {
+      window.open(data.url, '_blank', 'width=600,height=700');
+    }
+  } catch(e) {
+    alert('Failed to get auth URL: ' + e.message);
+  }
+}
+
+// Listen for OAuth completion message from popup
+window.addEventListener('message', e => {
+  if (e.data === 'vk-auth-ok') {
+    loadVKAccounts();
+  }
+});
+
+async function deleteVKAccount(id) {
+  if (!confirm('Remove VK account ' + id + '?')) return;
+  await api('/api/vk/accounts/delete', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({id})});
+  loadVKAccounts();
+}
+
+async function refreshVKCreds() {
+  try {
+    await api('/api/vk/credentials/refresh', {method:'POST'});
+    loadVKAccounts();
+  } catch(e) {
+    alert('Refresh failed: ' + e.message);
+  }
+}
+
 // Init
 loadStatus();
 loadLinks();
 loadClients();
 loadMetrics();
 loadLogs();
+loadVKAccounts();
 setInterval(loadLogs, 3000);
 setInterval(loadStatus, 10000);
 setInterval(loadLinks, 15000);
 setInterval(loadMetrics, 15000);
+setInterval(loadVKAccounts, 30000);
 
 // Enter to add client
 document.getElementById('new-client-name').addEventListener('keydown', e => {

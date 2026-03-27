@@ -246,6 +246,29 @@ func (t *androidTUN) Close() error {
 // connections: number of parallel TURN connections (0 = auto)
 // wgPrivKey: WireGuard client private key (base64)
 // serverPubKey: WireGuard server public key (base64)
+// StartWithCreds starts the tunnel using pre-supplied TURN credentials from the server.
+// If turnUser is non-empty, the TURN credential extraction is bypassed.
+func StartWithCreds(tunFd int, peerAddr, vkLink, yandexLink string, connections int, wgPrivKey, serverPubKey, dtlsFingerprint, turnUser, turnPass, turnAddr string) error {
+	// Store server-provided credentials for use in oneTurnConnection
+	if turnUser != "" {
+		serverTurnCreds.user = turnUser
+		serverTurnCreds.pass = turnPass
+		serverTurnCreds.addr = turnAddr
+	} else {
+		serverTurnCreds.user = ""
+		serverTurnCreds.pass = ""
+		serverTurnCreds.addr = ""
+	}
+	return Start(tunFd, peerAddr, vkLink, yandexLink, connections, wgPrivKey, serverPubKey, dtlsFingerprint)
+}
+
+// serverTurnCreds holds pre-supplied TURN credentials from the VPN server
+var serverTurnCreds struct {
+	user string
+	pass string
+	addr string
+}
+
 func Start(tunFd int, peerAddr, vkLink, yandexLink string, connections int, wgPrivKey, serverPubKey, dtlsFingerprint string) error {
 	tunnelMu.Lock()
 	if running {
@@ -261,9 +284,9 @@ func Start(tunFd int, peerAddr, vkLink, yandexLink string, connections int, wgPr
 		resetRunning()
 		return fmt.Errorf("peer address required")
 	}
-	if vkLink == "" && yandexLink == "" {
+	if vkLink == "" && yandexLink == "" && serverTurnCreds.user == "" {
 		resetRunning()
-		return fmt.Errorf("VK or Yandex link required")
+		return fmt.Errorf("VK or Yandex link required (or server-provided TURN credentials)")
 	}
 	if wgPrivKey == "" || serverPubKey == "" {
 		resetRunning()
@@ -291,7 +314,16 @@ func Start(tunFd int, peerAddr, vkLink, yandexLink string, connections int, wgPr
 
 	var link string
 	var getCreds func(string) (string, string, string, error)
-	if vkLink != "" {
+	if serverTurnCreds.user != "" {
+		// Server-provided credentials — link is optional, getCreds won't be called
+		link = "server-provided"
+		getCreds = func(string) (string, string, string, error) {
+			return serverTurnCreds.user, serverTurnCreds.pass, serverTurnCreds.addr, nil
+		}
+		if connections <= 0 {
+			connections = 16
+		}
+	} else if vkLink != "" {
 		parts := strings.Split(vkLink, "join/")
 		link = parts[len(parts)-1]
 		getCreds = getVkCreds
@@ -873,14 +905,25 @@ func oneDtlsConnection(ctx context.Context, peer *net.UDPAddr, listenConn net.Pa
 func oneTurnConnection(ctx context.Context, params *turnParams, peer *net.UDPAddr, conn2 net.PacketConn, c chan<- error) {
 	var err error
 	defer func() { c <- err }()
-	logMsg("[TURN] Getting credentials for link=%s", params.link)
-	user, pass, url, err1 := params.getCreds(params.link)
-	if err1 != nil {
-		err = fmt.Errorf("TURN creds: %s", err1)
-		logErr("[TURN] Credential fetch FAILED: %s", err1)
-		return
+
+	var user, pass, url string
+	if serverTurnCreds.user != "" {
+		// Use server-provided TURN credentials — skip VK/Yandex API calls
+		user = serverTurnCreds.user
+		pass = serverTurnCreds.pass
+		url = serverTurnCreds.addr
+		logMsg("[TURN] Using server-provided credentials: user=%s, turn_addr=%s", user, url)
+	} else {
+		logMsg("[TURN] Getting credentials for link=%s", params.link)
+		var err1 error
+		user, pass, url, err1 = params.getCreds(params.link)
+		if err1 != nil {
+			err = fmt.Errorf("TURN creds: %s", err1)
+			logErr("[TURN] Credential fetch FAILED: %s", err1)
+			return
+		}
+		logMsg("[TURN] Credentials OK: user=%s, turn_addr=%s", user, url)
 	}
-	logMsg("[TURN] Credentials OK: user=%s, turn_addr=%s", user, url)
 	urlhost, urlport, err1 := net.SplitHostPort(url)
 	if err1 != nil {
 		err = fmt.Errorf("TURN address parse: %s (url=%s)", err1, url)

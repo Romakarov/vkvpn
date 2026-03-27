@@ -173,3 +173,190 @@ func GetVKCredentials(link string) (*Credentials, error) {
 
 	return &Credentials{Username: user, Password: pass, Address: addr}, nil
 }
+
+// GetVKCredentialsWithToken extracts TURN credentials using a VK user access token
+// instead of the anonymous flow. Skips steps 1-2 (which are rate-limited/blocked)
+// and uses the user token directly for API calls.
+func GetVKCredentialsWithToken(link string, userAccessToken string) (*Credentials, error) {
+	// Extract join hash
+	if strings.Contains(link, "join/") {
+		parts := strings.Split(link, "join/")
+		link = parts[len(parts)-1]
+	}
+	if idx := strings.IndexAny(link, "/?#"); idx != -1 {
+		link = link[:idx]
+	}
+
+	doRequest := func(data string, url string) (map[string]interface{}, error) {
+		client := &http.Client{
+			Timeout: 20 * time.Second,
+			Transport: &http.Transport{
+				MaxIdleConns:        100,
+				MaxIdleConnsPerHost: 100,
+				IdleConnTimeout:     90 * time.Second,
+			},
+		}
+		defer client.CloseIdleConnections()
+		req, err := http.NewRequest("POST", url, bytes.NewBuffer([]byte(data)))
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:144.0) Gecko/20100101 Firefox/144.0")
+		req.Header.Add("Content-Type", "application/x-www-form-urlencoded")
+		resp, err := client.Do(req)
+		if err != nil {
+			return nil, err
+		}
+		defer resp.Body.Close()
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return nil, err
+		}
+		var result map[string]interface{}
+		if err = json.Unmarshal(body, &result); err != nil {
+			return nil, fmt.Errorf("JSON decode: %s (body: %s)", err, string(body))
+		}
+		return result, nil
+	}
+
+	getStr := func(m map[string]interface{}, keys ...string) (string, error) {
+		var current interface{} = m
+		for _, k := range keys {
+			cm, ok := current.(map[string]interface{})
+			if !ok {
+				return "", fmt.Errorf("expected map at key %q, got %T", k, current)
+			}
+			current = cm[k]
+		}
+		s, ok := current.(string)
+		if !ok {
+			return "", fmt.Errorf("expected string, got %T: %v", current, current)
+		}
+		return s, nil
+	}
+
+	// With user token, we skip steps 1-2 (anonymous token + getAnonymousAccessTokenPayload)
+	// and use the user access_token directly for the calls API.
+
+	// Step A: Get anonymous call token using user token
+	// The user token can call calls.getAnonymousToken directly
+	data := fmt.Sprintf("vk_join_link=https://vk.com/call/join/%s&name=vkvpn&access_token=%s", link, userAccessToken)
+	resp, err := doRequest(data, vkBaseURLs.ApiVK+"/method/calls.getAnonymousToken?v=5.264")
+	if err != nil {
+		return nil, fmt.Errorf("get call token: %w", err)
+	}
+
+	// Check for VK API errors
+	if errObj, ok := resp["error"].(map[string]interface{}); ok {
+		code := errObj["error_code"]
+		msg := errObj["error_msg"]
+		return nil, fmt.Errorf("VK API error %v: %v", code, msg)
+	}
+
+	token4, err := getStr(resp, "response", "token")
+	if err != nil {
+		// Fallback: try calls.join to get call info directly
+		return getVKCredsFallback(link, userAccessToken, doRequest, getStr)
+	}
+
+	// Step B: OK.ru anonymous login (same as original step 5)
+	data = fmt.Sprintf("%s%s%s", "session_data=%7B%22version%22%3A2%2C%22device_id%22%3A%22", uuid.New(), "%22%2C%22client_version%22%3A1.1%2C%22client_type%22%3A%22SDK_JS%22%7D&method=auth.anonymLogin&format=JSON&application_key=CGMMEJLGDIHBABABA")
+	resp, err = doRequest(data, vkBaseURLs.OkCDN+"/fb.do")
+	if err != nil {
+		return nil, fmt.Errorf("okru login: %w", err)
+	}
+	token5, err := getStr(resp, "session_key")
+	if err != nil {
+		return nil, fmt.Errorf("okru login parse: %w", err)
+	}
+
+	// Step C: Join conversation and get TURN credentials (same as original step 6)
+	data = fmt.Sprintf("joinLink=%s&isVideo=false&protocolVersion=5&anonymToken=%s&method=vchat.joinConversationByLink&format=JSON&application_key=CGMMEJLGDIHBABABA&session_key=%s", link, token4, token5)
+	resp, err = doRequest(data, vkBaseURLs.OkCDN+"/fb.do")
+	if err != nil {
+		return nil, fmt.Errorf("join call: %w", err)
+	}
+
+	return parseTurnCredentials(resp)
+}
+
+// getVKCredsFallback tries to get TURN credentials using calls.start (creates a call)
+func getVKCredsFallback(link, token string,
+	doRequest func(string, string) (map[string]interface{}, error),
+	getStr func(map[string]interface{}, ...string) (string, error),
+) (*Credentials, error) {
+	// Try calls.join with user token — may return ICE config
+	data := fmt.Sprintf("join_link=https://vk.com/call/join/%s&access_token=%s", link, token)
+	resp, err := doRequest(data, vkBaseURLs.ApiVK+"/method/calls.join?v=5.264")
+	if err != nil {
+		return nil, fmt.Errorf("calls.join: %w", err)
+	}
+
+	if errObj, ok := resp["error"].(map[string]interface{}); ok {
+		code := errObj["error_code"]
+		msg := errObj["error_msg"]
+		return nil, fmt.Errorf("calls.join error %v: %v", code, msg)
+	}
+
+	// Try to extract TURN server from the join response
+	if turnServer, ok := resp["response"].(map[string]interface{}); ok {
+		if ts, ok := turnServer["turn_server"].(map[string]interface{}); ok {
+			user, _ := ts["username"].(string)
+			pass, _ := ts["credential"].(string)
+			if urls, ok := ts["urls"].([]interface{}); ok && len(urls) > 0 {
+				if u, ok := urls[0].(string); ok && user != "" && pass != "" {
+					clean := strings.Split(u, "?")[0]
+					addr := strings.TrimPrefix(strings.TrimPrefix(clean, "turn:"), "turns:")
+					return &Credentials{Username: user, Password: pass, Address: addr}, nil
+				}
+			}
+		}
+	}
+
+	return nil, fmt.Errorf("could not extract TURN credentials from VK API (both getAnonymousToken and calls.join failed)")
+}
+
+// parseTurnCredentials extracts TURN credentials from an OK.ru API response
+func parseTurnCredentials(resp map[string]interface{}) (*Credentials, error) {
+	getStr := func(m map[string]interface{}, keys ...string) (string, error) {
+		var current interface{} = m
+		for _, k := range keys {
+			cm, ok := current.(map[string]interface{})
+			if !ok {
+				return "", fmt.Errorf("expected map at key %q, got %T", k, current)
+			}
+			current = cm[k]
+		}
+		s, ok := current.(string)
+		if !ok {
+			return "", fmt.Errorf("expected string, got %T: %v", current, current)
+		}
+		return s, nil
+	}
+
+	user, err := getStr(resp, "turn_server", "username")
+	if err != nil {
+		return nil, fmt.Errorf("parse username: %w", err)
+	}
+	pass, err := getStr(resp, "turn_server", "credential")
+	if err != nil {
+		return nil, fmt.Errorf("parse credential: %w", err)
+	}
+
+	turnServer, ok := resp["turn_server"].(map[string]interface{})
+	if !ok {
+		return nil, fmt.Errorf("missing turn_server in response")
+	}
+	urls, ok := turnServer["urls"].([]interface{})
+	if !ok || len(urls) == 0 {
+		return nil, fmt.Errorf("missing turn_server urls")
+	}
+	turnURL, ok := urls[0].(string)
+	if !ok {
+		return nil, fmt.Errorf("invalid turn URL type")
+	}
+	clean := strings.Split(turnURL, "?")[0]
+	addr := strings.TrimPrefix(strings.TrimPrefix(clean, "turn:"), "turns:")
+
+	return &Credentials{Username: user, Password: pass, Address: addr}, nil
+}

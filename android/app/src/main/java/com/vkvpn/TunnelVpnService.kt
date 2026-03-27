@@ -41,9 +41,12 @@ class TunnelVpnService : VpnService() {
                 val serverPubKey = intent.getStringExtra("wg_pubkey") ?: return START_NOT_STICKY
                 val dtlsPort = intent.getIntExtra("dtls_port", 56000)
                 val dtlsFingerprint = intent.getStringExtra("dtls_fingerprint") ?: ""
+                val turnUser = intent.getStringExtra("turn_username") ?: ""
+                val turnPass = intent.getStringExtra("turn_password") ?: ""
+                val turnAddr = intent.getStringExtra("turn_address") ?: ""
 
                 startForeground(1, buildNotification("Connecting..."))
-                startTunnel(server, link, provider, wgPrivKey, wgAddress, wgDns, serverPubKey, dtlsPort, dtlsFingerprint)
+                startTunnel(server, link, provider, wgPrivKey, wgAddress, wgDns, serverPubKey, dtlsPort, dtlsFingerprint, turnUser, turnPass, turnAddr)
             }
             ACTION_STOP -> {
                 stopTunnel()
@@ -58,7 +61,8 @@ class TunnelVpnService : VpnService() {
     private fun startTunnel(
         server: String, link: String, provider: String,
         wgPrivKey: String, wgAddress: String, wgDns: String,
-        serverPubKey: String, dtlsPort: Int, dtlsFingerprint: String
+        serverPubKey: String, dtlsPort: Int, dtlsFingerprint: String,
+        turnUser: String = "", turnPass: String = "", turnAddr: String = ""
     ) {
         tunnelThread = Thread {
             try {
@@ -93,12 +97,23 @@ class TunnelVpnService : VpnService() {
                 Log.i(TAG, "Starting tunnel to $peerAddr")
                 // Enable remote logging to VPS
                 Tunnel.setRemoteLog("https://$server:8080", wgAddress)
-                Tunnel.start(
-                    tunFd.toLong(), peerAddr,
-                    vkLink, yaLink,
-                    0L, wgPrivKey, serverPubKey,
-                    dtlsFingerprint
-                )
+                if (turnUser.isNotEmpty()) {
+                    Log.i(TAG, "Using server-provided TURN credentials")
+                    Tunnel.startWithCreds(
+                        tunFd.toLong(), peerAddr,
+                        vkLink, yaLink,
+                        0L, wgPrivKey, serverPubKey,
+                        dtlsFingerprint,
+                        turnUser, turnPass, turnAddr
+                    )
+                } else {
+                    Tunnel.start(
+                        tunFd.toLong(), peerAddr,
+                        vkLink, yaLink,
+                        0L, wgPrivKey, serverPubKey,
+                        dtlsFingerprint
+                    )
+                }
 
                 isRunning = true
                 updateNotification("Connected")

@@ -441,6 +441,9 @@ func main() {
 	n := flag.Int("n", 0, "connections to TURN (default 16 for VK, 1 for Yandex)")
 	udp := flag.Bool("udp", false, "connect to TURN with UDP")
 	direct := flag.Bool("no-dtls", false, "connect without obfuscation. DO NOT USE")
+	turnUser := flag.String("turn-user", "", "TURN username (server-provided, skips VK/Yandex auth)")
+	turnPass := flag.String("turn-pass", "", "TURN password (server-provided)")
+	turnAddr := flag.String("turn-addr", "", "TURN server address host:port (server-provided)")
 	flag.Parse()
 	if *dtlsFingerprint != "" {
 		expectedFingerprint = strings.ToLower(*dtlsFingerprint)
@@ -452,28 +455,42 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	if (*vklink == "") == (*yalink == "") {
-		log.Panicf("Need either vk-link or yandex-link!")
-	}
 	var link string
 	var getCreds getCredsFunc
-	if *vklink != "" {
-		parts := strings.Split(*vklink, "join/")
-		link = parts[len(parts)-1]
-		getCreds = getVkCreds
+
+	if *turnUser != "" && *turnPass != "" && *turnAddr != "" {
+		// Server-provided TURN credentials — skip VK/Yandex auth
+		log.Printf("Using server-provided TURN credentials: user=%s addr=%s", *turnUser, *turnAddr)
+		fixedUser, fixedPass, fixedAddr := *turnUser, *turnPass, *turnAddr
+		link = "server-provided"
+		getCreds = func(string) (string, string, string, error) {
+			return fixedUser, fixedPass, fixedAddr, nil
+		}
 		if *n <= 0 {
 			*n = 16
 		}
 	} else {
-		parts := strings.Split(*yalink, "j/")
-		link = parts[len(parts)-1]
-		getCreds = getYandexCreds
-		if *n <= 0 {
-			*n = 1
+		if (*vklink == "") == (*yalink == "") {
+			log.Panicf("Need either vk-link or yandex-link (or --turn-user/--turn-pass/--turn-addr)!")
 		}
-	}
-	if idx := strings.IndexAny(link, "/?#"); idx != -1 {
-		link = link[:idx]
+		if *vklink != "" {
+			parts := strings.Split(*vklink, "join/")
+			link = parts[len(parts)-1]
+			getCreds = getVkCreds
+			if *n <= 0 {
+				*n = 16
+			}
+		} else {
+			parts := strings.Split(*yalink, "j/")
+			link = parts[len(parts)-1]
+			getCreds = getYandexCreds
+			if *n <= 0 {
+				*n = 1
+			}
+		}
+		if idx := strings.IndexAny(link, "/?#"); idx != -1 {
+			link = link[:idx]
+		}
 	}
 	params := &turnParams{
 		*host,
