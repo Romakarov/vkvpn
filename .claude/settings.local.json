@@ -1,0 +1,26 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git clone:*)",
+      "Bash(cp -r /tmp/vkvpn_clone/. /Users/roman/VKvpnn/)",
+      "Bash(rm -rf /tmp/vkvpn_clone)",
+      "Bash(git -C /Users/roman/VKvpnn log --oneline -20 --all)",
+      "Bash(git -C /Users/roman/VKvpnn branch -a)",
+      "Bash(git -C /Users/roman/VKvpnn log main..origin/claude/plan-project-improvements-RGJNB --oneline)",
+      "Bash(git -C /Users/roman/VKvpnn diff --stat main...origin/claude/plan-project-improvements-RGJNB)",
+      "Bash(git -C /Users/roman/VKvpnn log origin/claude/plan-project-improvements-RGJNB --oneline --format=\"%h %s%n  %b\" -10)",
+      "Bash(brew install:*)",
+      "Bash(rm -f /Users/roman/VKvpnn/.git/index.lock)",
+      "Bash(git checkout:*)",
+      "Read(//usr/local/go/bin/**)",
+      "Read(//opt/homebrew/bin/**)",
+      "Bash(brew list:*)",
+      "Bash(tar czf:*)",
+      "Read(//tmp/**)",
+      "Bash(sshpass -p '6M:zH3WFT7U25Tg21chX' scp -o StrictHostKeyChecking=no /tmp/vkvpn-src.tar.gz root@144.124.247.27:/tmp/vkvpn-src.tar.gz)",
+      "Bash(sshpass -p '6M:zH3WFT7U25Tg21chX' ssh -o StrictHostKeyChecking=no root@144.124.247.27 'cp /opt/vkvpn/server /opt/vkvpn/server.bak && mv /opt/vkvpn/server-new /opt/vkvpn/server && systemctl restart vkvpn && sleep 2 && systemctl status vkvpn --no-pager')",
+      "Bash(sshpass -p '6M:zH3WFT7U25Tg21chX' ssh -o StrictHostKeyChecking=no root@144.124.247.27 \"curl -s ''http://localhost:8080/api/status?token=GeWY30mOXtA8QhIr''\")",
+      "Bash(sshpass -p '6M:zH3WFT7U25Tg21chX' ssh -o StrictHostKeyChecking=no root@144.124.247.27 'rm -rf /tmp/vkvpn-build && mkdir -p /tmp/vkvpn-build && cd /tmp/vkvpn-build && tar xzf /tmp/vkvpn-src.tar.gz && go build -ldflags \"\"-s -w\"\" -trimpath -o /opt/vkvpn/server-new ./server/ 2>&1 && echo \"\"BUILD OK\"\"')"
+    ]
+  }
+}

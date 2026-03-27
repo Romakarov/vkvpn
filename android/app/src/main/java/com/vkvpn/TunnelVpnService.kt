@@ -18,7 +18,7 @@ class TunnelVpnService : VpnService() {
         const val ACTION_START = "com.vkvpn.START"
         const val ACTION_STOP = "com.vkvpn.STOP"
         const val CHANNEL_ID = "vkvpn_channel"
-        var isRunning = false
+        @Volatile var isRunning = false
     }
 
     private var vpnInterface: ParcelFileDescriptor? = null
@@ -49,9 +49,10 @@ class TunnelVpnService : VpnService() {
                 stopTunnel()
                 stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf()
+                return START_NOT_STICKY
             }
         }
-        return START_STICKY
+        return START_NOT_STICKY // don't restart automatically after kill
     }
 
     private fun startTunnel(
@@ -61,11 +62,11 @@ class TunnelVpnService : VpnService() {
     ) {
         tunnelThread = Thread {
             try {
-                // 1. Create VPN interface (TUN device) FIRST
                 val builder = Builder()
                     .setSession("VKVPN")
                     .addAddress(wgAddress, 32)
-                    .addRoute("0.0.0.0", 0)
+                    .addRoute("0.0.0.0", 0)       // all IPv4
+                    .addRoute("::", 0)              // all IPv6 — prevent leaks
                     .setMtu(1280)
                     .setBlocking(true)
 
@@ -82,12 +83,9 @@ class TunnelVpnService : VpnService() {
                     return@Thread
                 }
 
-                // 2. Detach fd — Go/wireguard-go now owns the TUN device
                 val tunFd = vpnInterface!!.detachFd()
                 vpnInterface = null
 
-                // 3. Start tunnel: wireguard-go reads TUN fd, encrypts,
-                //    DTLS+TURN forwards to server
                 val vkLink = if (provider == "vk") link else ""
                 val yaLink = if (provider == "yandex") link else ""
                 val peerAddr = "$server:$dtlsPort"
@@ -100,11 +98,9 @@ class TunnelVpnService : VpnService() {
                     dtlsFingerprint
                 )
 
-                // Mark running AFTER successful start
                 isRunning = true
                 updateNotification("Connected")
 
-                // Tunnel.start() returns immediately; wait until stopped
                 while (isRunning && Tunnel.isRunning()) {
                     Thread.sleep(1000)
                 }
@@ -115,15 +111,16 @@ class TunnelVpnService : VpnService() {
                 Log.e(TAG, "Tunnel error", e)
             } finally {
                 isRunning = false
-                Tunnel.stop()
+                try { Tunnel.stop() } catch (_: Exception) {}
+                stopForeground(STOP_FOREGROUND_REMOVE)
+                stopSelf()
             }
         }.also { it.start() }
     }
 
     private fun stopTunnel() {
         isRunning = false
-        Tunnel.stop()
-        // vpnInterface is null after detachFd — fd is closed by Go
+        try { Tunnel.stop() } catch (_: Exception) {}
         tunnelThread?.interrupt()
     }
 
