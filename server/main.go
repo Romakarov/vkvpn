@@ -1394,6 +1394,47 @@ func apiVKDeleteAccount(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 }
 
+// apiVKAddToken manually adds a VK access token (for when OAuth redirect doesn't work)
+func apiVKAddToken(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST only", http.StatusMethodNotAllowed)
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	var req struct {
+		Token string `json:"token"`
+		Name  string `json:"name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Token == "" {
+		http.Error(w, "token required", http.StatusBadRequest)
+		return
+	}
+	if req.Name == "" {
+		req.Name = "manual"
+	}
+
+	account := VKAccount{
+		ID:          fmt.Sprintf("manual_%d", time.Now().Unix()),
+		Name:        req.Name,
+		AccessToken: req.Token,
+		AddedAt:     time.Now().Format(time.RFC3339),
+		Enabled:     true,
+	}
+
+	cfg.mu.Lock()
+	cfg.VKAccounts = append(cfg.VKAccounts, account)
+	cfg.mu.Unlock()
+	cfg.Save()
+
+	logger.Printf("VK token added manually: name=%s", req.Name)
+
+	// Immediately try to refresh credentials
+	go refreshTurnCredentials()
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok", "id": account.ID})
+}
+
 // apiVKCredentials returns the current cached TURN credentials (debug)
 func apiVKCredentials(w http.ResponseWriter, r *http.Request) {
 	turnCredsCache.RLock()
@@ -1891,6 +1932,7 @@ func main() {
 	mux.HandleFunc("/api/vk/callback", apiVKCallback) // no auth — VK redirects here
 	mux.HandleFunc("/api/vk/accounts", authMiddleware(apiVKAccounts))
 	mux.HandleFunc("/api/vk/accounts/delete", authMiddleware(apiVKDeleteAccount))
+	mux.HandleFunc("/api/vk/accounts/add-token", authMiddleware(apiVKAddToken))
 	mux.HandleFunc("/api/vk/credentials", authMiddleware(apiVKCredentials))
 	mux.HandleFunc("/api/vk/credentials/refresh", authMiddleware(apiVKRefreshCreds))
 	mux.HandleFunc("/api/logs", authMiddleware(apiLogs))

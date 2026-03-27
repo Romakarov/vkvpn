@@ -280,10 +280,20 @@ input:focus, select:focus { border-color: var(--accent); }
     </p>
     <div id="vk-accounts-list" style="margin-bottom:12px"></div>
     <div id="vk-creds-status" style="margin-bottom:12px;font-size:13px;color:var(--text2)"></div>
-    <div style="display:flex;gap:8px">
-      <button class="btn btn-primary" onclick="addVKAccount()">+ Add VK Account</button>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <button class="btn btn-primary" onclick="addVKAccount()">+ OAuth Login</button>
       <button class="btn btn-sm" onclick="refreshVKCreds()" style="align-self:center">Refresh Credentials</button>
     </div>
+    <details style="margin-top:12px">
+      <summary style="cursor:pointer;color:var(--accent2);font-size:13px">Manual token entry</summary>
+      <div class="inline-form" style="margin-top:8px">
+        <input type="text" id="vk-token-input" placeholder="Paste VK access_token here" style="flex:1">
+        <button class="btn btn-sm btn-success" onclick="addVKToken()">Add Token</button>
+      </div>
+      <p style="font-size:12px;color:var(--text2);margin-top:4px">
+        Get token: <a href="https://oauth.vk.com/authorize?client_id=6287487&scope=audio,video,offline&response_type=token&v=5.264&redirect_uri=https://oauth.vk.com/blank.html" target="_blank" style="color:var(--accent2)">click here</a>, log in, copy access_token from URL
+      </p>
+    </details>
   </div>
 
   <!-- Client management -->
@@ -670,6 +680,24 @@ window.addEventListener('message', e => {
     loadVKAccounts();
   }
 });
+
+async function addVKToken() {
+  let token = document.getElementById('vk-token-input').value.trim();
+  if (!token) { alert('Paste VK access_token'); return; }
+  // Extract token from URL if user pasted full URL
+  if (token.includes('access_token=')) {
+    const m = token.match(/access_token=([^&]+)/);
+    if (m) token = m[1];
+  }
+  try {
+    await api('/api/vk/accounts/add-token', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({token})});
+    document.getElementById('vk-token-input').value = '';
+    setTimeout(loadVKAccounts, 3000); // wait for credential refresh
+    loadVKAccounts();
+  } catch(e) {
+    alert('Failed: ' + e.message);
+  }
+}
 
 async function deleteVKAccount(id) {
   if (!confirm('Remove VK account ' + id + '?')) return;
