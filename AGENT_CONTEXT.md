@@ -26,14 +26,33 @@
 - Android приложение: QR-сканер, шифрованное хранилище, логирование с отправкой на VPS, просмотр логов
 - Код туннеля: TURN connect, allocate — всё проходит. Проблема на уровне TURN relay (VK rate limit / Yandex 403)
 
+## Реализовано (27 марта 2026, вечер)
+
+### Серверная VK OAuth авторизация
+Реализован вариант 2 — серверная авторизация через VK-аккаунт:
+- Сервер авторизуется в VK через OAuth, хранит access_token
+- Фоновый процесс каждые 5 минут извлекает TURN credentials через `GetVKCredentialsWithToken`
+- Credentials кэшируются и отдаются клиентам через `/api/clients/appconfig` (поля `turn_username`, `turn_password`, `turn_address`)
+- Клиенты (Android, desktop) используют серверные credentials напрямую, пропуская сломанный VK anonymous flow
+- Админка: секция "VK Accounts" для управления OAuth-аккаунтами
+
+**Новые API эндпоинты:**
+- `GET /api/vk/auth-url` — OAuth URL для авторизации
+- `GET /api/vk/callback` — OAuth callback от VK
+- `GET /api/vk/accounts` — список VK аккаунтов
+- `POST /api/vk/accounts/delete` — удалить аккаунт
+- `GET /api/vk/credentials` — статус кэшированных credentials
+- `POST /api/vk/credentials/refresh` — принудительное обновление
+
+**Статус:** задеплоено на VPS, сервер работает. Нужно авторизовать VK-аккаунт через админку для проверки полного flow.
+
 ## Что нужно сделать
 
-### Приоритет 1: Починить доступ к VK TURN
-Варианты:
-1. **Свой `client_id`** — зарегистрировать VK-приложение на vk.com/dev, получить свой client_id/secret. Непонятно — даст ли VK доступ к `calls.getAnonymousAccessTokenPayload`
-2. **Авторизация через VK-аккаунт** — OAuth flow, использовать user token вместо anonymous. В issue #48 обсуждают
-3. **Кеширование credentials** — не дёргать API при каждом reconnect, переиспользовать пока не протухнут
-4. **Подождать** — rate limit может быть временным
+### Приоритет 1: Проверить VK OAuth flow
+- Зайти в админку https://144.124.247.27:8080/?token=4BRxevX2HIAXyW_E
+- Нажать "Add VK Account" → авторизоваться в VK
+- Проверить что TURN credentials появляются
+- Если client_id 6287487 не работает с OAuth — зарегистрировать своё приложение на vk.com/dev
 
 ### Приоритет 2: Яндекс TURN
 - Яндекс TURN не работает как open relay (403 Forbidden IP)

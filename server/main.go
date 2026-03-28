@@ -27,6 +27,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -38,6 +39,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/Romakarov/vkvpn/pkg/turnauth"
 	"github.com/pion/dtls/v3"
 	"github.com/pion/dtls/v3/pkg/crypto/selfsign"
 )
@@ -60,6 +62,7 @@ type Config struct {
 	LinkType    string   `json:"link_type"`
 	Clients     []Client    `json:"clients"`
 	Links       []LinkEntry `json:"links,omitempty"`
+	VKAccounts  []VKAccount `json:"vk_accounts,omitempty"`
 	DTLSPort      int      `json:"dtls_port"`
 	AdminPass     string   `json:"admin_pass,omitempty"`     // legacy plaintext, migrated on startup
 	AdminPassHash string   `json:"admin_pass_hash,omitempty"` // bcrypt hash
@@ -79,6 +82,18 @@ type LinkEntry struct {
 	Type    string `json:"type"`    // "vk" or "yandex"
 	AddedAt string `json:"added_at"` // RFC3339
 	Active  bool   `json:"active"`
+}
+
+// VKAccount holds a VK OAuth account used for server-side TURN credential extraction
+type VKAccount struct {
+	ID           string `json:"id"`            // VK user ID
+	Name         string `json:"name"`          // display name
+	AccessToken  string `json:"access_token"`
+	RefreshToken string `json:"refresh_token"`
+	ExpiresAt    int64  `json:"expires_at"`    // unix timestamp
+	AddedAt      string `json:"added_at"`
+	Enabled      bool   `json:"enabled"`
+	LastError    string `json:"last_error,omitempty"`
 }
 
 func loadConfig(path string) (*Config, error) {
@@ -1155,8 +1170,383 @@ func apiAppConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	cfg.mu.RUnlock()
 
+	// Include server-side TURN credentials if available
+	turnCredsCache.RLock()
+	if turnCredsCache.Username != "" && time.Now().Before(turnCredsCache.ExpiresAt) {
+		appCfg["turn_username"] = turnCredsCache.Username
+		appCfg["turn_password"] = turnCredsCache.Password
+		appCfg["turn_address"] = turnCredsCache.Address
+		appCfg["creds_mode"] = "server"
+	}
+	turnCredsCache.RUnlock()
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(appCfg)
+}
+
+// ─── VK OAuth + Server-side TURN credentials ───
+
+// oauthStateStore prevents CSRF on OAuth callback
+var oauthStates sync.Map // state string → expiry time.Time
+
+func generateOAuthState() string {
+	b := make([]byte, 16)
+	rand.Read(b)
+	state := hex.EncodeToString(b)
+	oauthStates.Store(state, time.Now().Add(10*time.Minute))
+	return state
+}
+
+func validateOAuthState(state string) bool {
+	v, ok := oauthStates.LoadAndDelete(state)
+	if !ok {
+		return false
+	}
+	return time.Now().Before(v.(time.Time))
+}
+
+// Cached TURN credentials extracted by the server
+var turnCredsCache struct {
+	sync.RWMutex
+	Username  string    `json:"username"`
+	Password  string    `json:"password"`
+	Address   string    `json:"address"`
+	FetchedAt time.Time `json:"fetched_at"`
+	ExpiresAt time.Time `json:"expires_at"`
+	AccountID string    `json:"account_id"`
+	Error     string    `json:"error,omitempty"`
+}
+
+const (
+	vkClientID     = "6287487"
+	vkClientSecret = "QbYic1K3lEV5kTGiqlq2"
+)
+
+// apiVKAuthURL generates a VK OAuth URL for the admin to authorize a VK account
+func apiVKAuthURL(w http.ResponseWriter, r *http.Request) {
+	state := generateOAuthState()
+	// Build redirect URI from current request
+	scheme := "https"
+	if r.TLS == nil {
+		scheme = "http"
+	}
+	host := r.Host
+	redirectURI := fmt.Sprintf("%s://%s/api/vk/callback", scheme, host)
+
+	authURL := fmt.Sprintf(
+		"https://oauth.vk.com/authorize?client_id=%s&redirect_uri=%s&scope=audio,video,offline&response_type=code&state=%s&v=5.264",
+		vkClientID,
+		url.QueryEscape(redirectURI),
+		state,
+	)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{
+		"url":   authURL,
+		"state": state,
+	})
+}
+
+// apiVKCallback handles the OAuth callback from VK (no auth middleware — VK redirects here)
+func apiVKCallback(w http.ResponseWriter, r *http.Request) {
+	code := r.URL.Query().Get("code")
+	state := r.URL.Query().Get("state")
+	if code == "" || state == "" {
+		errMsg := r.URL.Query().Get("error_description")
+		if errMsg == "" {
+			errMsg = "missing code or state"
+		}
+		http.Error(w, errMsg, http.StatusBadRequest)
+		return
+	}
+	if !validateOAuthState(state) {
+		http.Error(w, "invalid or expired state", http.StatusForbidden)
+		return
+	}
+
+	// Build redirect URI (must match the one used in auth-url)
+	scheme := "https"
+	if r.TLS == nil {
+		scheme = "http"
+	}
+	redirectURI := fmt.Sprintf("%s://%s/api/vk/callback", scheme, r.Host)
+
+	// Exchange code for access token
+	tokenURL := "https://oauth.vk.com/access_token"
+	resp, err := http.Get(fmt.Sprintf(
+		"%s?client_id=%s&client_secret=%s&redirect_uri=%s&code=%s",
+		tokenURL, vkClientID, vkClientSecret, url.QueryEscape(redirectURI), code,
+	))
+	if err != nil {
+		http.Error(w, "token exchange failed: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+
+	var tokenResp struct {
+		AccessToken  string `json:"access_token"`
+		ExpiresIn    int    `json:"expires_in"`
+		UserID       int    `json:"user_id"`
+		Error        string `json:"error"`
+		ErrorDesc    string `json:"error_description"`
+	}
+	if err := json.Unmarshal(body, &tokenResp); err != nil {
+		http.Error(w, "invalid token response", http.StatusBadGateway)
+		return
+	}
+	if tokenResp.Error != "" {
+		http.Error(w, fmt.Sprintf("VK error: %s — %s", tokenResp.Error, tokenResp.ErrorDesc), http.StatusBadGateway)
+		return
+	}
+	if tokenResp.AccessToken == "" {
+		http.Error(w, "empty access token from VK", http.StatusBadGateway)
+		return
+	}
+
+	// Calculate expiry
+	expiresAt := int64(0)
+	if tokenResp.ExpiresIn > 0 {
+		expiresAt = time.Now().Unix() + int64(tokenResp.ExpiresIn)
+	}
+
+	account := VKAccount{
+		ID:          fmt.Sprintf("%d", tokenResp.UserID),
+		Name:        fmt.Sprintf("vk_%d", tokenResp.UserID),
+		AccessToken: tokenResp.AccessToken,
+		ExpiresAt:   expiresAt,
+		AddedAt:     time.Now().Format(time.RFC3339),
+		Enabled:     true,
+	}
+
+	cfg.mu.Lock()
+	// Replace if same user ID exists
+	found := false
+	for i, a := range cfg.VKAccounts {
+		if a.ID == account.ID {
+			cfg.VKAccounts[i] = account
+			found = true
+			break
+		}
+	}
+	if !found {
+		cfg.VKAccounts = append(cfg.VKAccounts, account)
+	}
+	cfg.mu.Unlock()
+	cfg.Save()
+
+	logger.Printf("VK account added: user_id=%s", account.ID)
+
+	// Show success page (admin's browser is redirected here)
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	fmt.Fprintf(w, `<!DOCTYPE html><html><body>
+<h2>VK account linked successfully!</h2>
+<p>User ID: %s</p>
+<p>You can close this tab and return to the admin panel.</p>
+<script>window.opener && window.opener.postMessage('vk-auth-ok','*');</script>
+</body></html>`, account.ID)
+}
+
+// apiVKAccounts lists VK accounts
+func apiVKAccounts(w http.ResponseWriter, r *http.Request) {
+	cfg.mu.RLock()
+	accounts := make([]map[string]interface{}, len(cfg.VKAccounts))
+	for i, a := range cfg.VKAccounts {
+		accounts[i] = map[string]interface{}{
+			"id":         a.ID,
+			"name":       a.Name,
+			"enabled":    a.Enabled,
+			"added_at":   a.AddedAt,
+			"expires_at": a.ExpiresAt,
+			"last_error": a.LastError,
+			"has_token":  a.AccessToken != "",
+		}
+	}
+	cfg.mu.RUnlock()
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(accounts)
+}
+
+// apiVKDeleteAccount removes a VK account
+func apiVKDeleteAccount(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST only", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.ID == "" {
+		http.Error(w, "id required", http.StatusBadRequest)
+		return
+	}
+	cfg.mu.Lock()
+	for i, a := range cfg.VKAccounts {
+		if a.ID == req.ID {
+			cfg.VKAccounts = append(cfg.VKAccounts[:i], cfg.VKAccounts[i+1:]...)
+			break
+		}
+	}
+	cfg.mu.Unlock()
+	cfg.Save()
+	logger.Printf("VK account removed: %s", req.ID)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
+// apiVKAddToken manually adds a VK access token (for when OAuth redirect doesn't work)
+func apiVKAddToken(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST only", http.StatusMethodNotAllowed)
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	var req struct {
+		Token string `json:"token"`
+		Name  string `json:"name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Token == "" {
+		http.Error(w, "token required", http.StatusBadRequest)
+		return
+	}
+	if req.Name == "" {
+		req.Name = "manual"
+	}
+
+	account := VKAccount{
+		ID:          fmt.Sprintf("manual_%d", time.Now().Unix()),
+		Name:        req.Name,
+		AccessToken: req.Token,
+		AddedAt:     time.Now().Format(time.RFC3339),
+		Enabled:     true,
+	}
+
+	cfg.mu.Lock()
+	cfg.VKAccounts = append(cfg.VKAccounts, account)
+	cfg.mu.Unlock()
+	cfg.Save()
+
+	logger.Printf("VK token added manually: name=%s", req.Name)
+
+	// Immediately try to refresh credentials
+	go refreshTurnCredentials()
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok", "id": account.ID})
+}
+
+// apiVKCredentials returns the current cached TURN credentials (debug)
+func apiVKCredentials(w http.ResponseWriter, r *http.Request) {
+	turnCredsCache.RLock()
+	resp := map[string]interface{}{
+		"username":   turnCredsCache.Username,
+		"address":    turnCredsCache.Address,
+		"fetched_at": turnCredsCache.FetchedAt,
+		"expires_at": turnCredsCache.ExpiresAt,
+		"account_id": turnCredsCache.AccountID,
+		"error":      turnCredsCache.Error,
+		"has_creds":  turnCredsCache.Username != "",
+	}
+	turnCredsCache.RUnlock()
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp)
+}
+
+// apiVKRefreshCreds manually triggers a credential refresh
+func apiVKRefreshCreds(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST only", http.StatusMethodNotAllowed)
+		return
+	}
+	refreshTurnCredentials()
+	apiVKCredentials(w, r)
+}
+
+// refreshTurnCredentials fetches TURN credentials using a VK account
+func refreshTurnCredentials() {
+	cfg.mu.RLock()
+	link := cfg.ActiveLink
+	var account *VKAccount
+	for i, a := range cfg.VKAccounts {
+		if a.Enabled && a.AccessToken != "" {
+			acc := cfg.VKAccounts[i]
+			account = &acc
+			break
+		}
+	}
+	cfg.mu.RUnlock()
+
+	if account == nil {
+		turnCredsCache.Lock()
+		turnCredsCache.Error = "no enabled VK accounts"
+		turnCredsCache.Unlock()
+		return
+	}
+	if link == "" {
+		turnCredsCache.Lock()
+		turnCredsCache.Error = "no active TURN link"
+		turnCredsCache.Unlock()
+		return
+	}
+
+	creds, err := turnauth.GetVKCredentialsWithToken(link, account.AccessToken)
+	if err != nil {
+		logger.Printf("TURN credential refresh failed (account=%s): %s", account.ID, err)
+		turnCredsCache.Lock()
+		turnCredsCache.Error = err.Error()
+		turnCredsCache.Unlock()
+
+		// Mark account error
+		cfg.mu.Lock()
+		for i, a := range cfg.VKAccounts {
+			if a.ID == account.ID {
+				cfg.VKAccounts[i].LastError = err.Error()
+				break
+			}
+		}
+		cfg.mu.Unlock()
+		return
+	}
+
+	turnCredsCache.Lock()
+	turnCredsCache.Username = creds.Username
+	turnCredsCache.Password = creds.Password
+	turnCredsCache.Address = creds.Address
+	turnCredsCache.FetchedAt = time.Now()
+	turnCredsCache.ExpiresAt = time.Now().Add(10 * time.Minute) // conservative estimate
+	turnCredsCache.AccountID = account.ID
+	turnCredsCache.Error = ""
+	turnCredsCache.Unlock()
+
+	// Clear account error
+	cfg.mu.Lock()
+	for i, a := range cfg.VKAccounts {
+		if a.ID == account.ID {
+			cfg.VKAccounts[i].LastError = ""
+			break
+		}
+	}
+	cfg.mu.Unlock()
+
+	logger.Printf("TURN credentials refreshed: user=%s addr=%s (account=%s)", creds.Username, creds.Address, account.ID)
+}
+
+// startCredentialManager runs a background goroutine that refreshes TURN credentials
+func startCredentialManager(ctx context.Context) {
+	// Initial fetch after 5 seconds (let server start up)
+	time.Sleep(5 * time.Second)
+	refreshTurnCredentials()
+
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			refreshTurnCredentials()
+		}
+	}
 }
 
 func apiLogs(w http.ResponseWriter, r *http.Request) {
@@ -1514,6 +1904,9 @@ func main() {
 	// Start DTLS server
 	go runDTLSServer(ctx, *dtlsAddr, *wgConnect)
 
+	// Start background TURN credential manager
+	go startCredentialManager(ctx)
+
 	// Apply WireGuard config
 	if cfg.ServerPriv != "" {
 		if err := cfg.applyWireGuard(); err != nil {
@@ -1535,6 +1928,13 @@ func main() {
 	mux.HandleFunc("/api/clients/toggle", authMiddleware(apiToggleClient))
 	mux.HandleFunc("/api/clients/config", authMiddleware(apiClientConfig))
 	mux.HandleFunc("/api/clients/appconfig", authMiddleware(apiAppConfig))
+	mux.HandleFunc("/api/vk/auth-url", authMiddleware(apiVKAuthURL))
+	mux.HandleFunc("/api/vk/callback", apiVKCallback) // no auth — VK redirects here
+	mux.HandleFunc("/api/vk/accounts", authMiddleware(apiVKAccounts))
+	mux.HandleFunc("/api/vk/accounts/delete", authMiddleware(apiVKDeleteAccount))
+	mux.HandleFunc("/api/vk/accounts/add-token", authMiddleware(apiVKAddToken))
+	mux.HandleFunc("/api/vk/credentials", authMiddleware(apiVKCredentials))
+	mux.HandleFunc("/api/vk/credentials/refresh", authMiddleware(apiVKRefreshCreds))
 	mux.HandleFunc("/api/logs", authMiddleware(apiLogs))
 	mux.HandleFunc("/api/metrics", authMiddleware(apiMetrics))
 	mux.HandleFunc("/api/device-logs", func(w http.ResponseWriter, r *http.Request) {
