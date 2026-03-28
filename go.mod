@@ -1,6 +1,6 @@
 module github.com/Romakarov/vkvpn
 
-go 1.24.7
+go 1.25.0
 
 require (
 	github.com/google/uuid v1.6.0
@@ -8,7 +8,7 @@ require (
 	github.com/pion/dtls/v3 v3.1.2
 	github.com/pion/logging v0.2.4
 	github.com/pion/turn/v5 v5.0.3
-	golang.org/x/crypto v0.47.0
+	golang.org/x/crypto v0.49.0
 )
 
 require (
@@ -16,5 +16,12 @@ require (
 	github.com/pion/stun/v3 v3.1.1 // indirect
 	github.com/pion/transport/v4 v4.0.1 // indirect
 	github.com/wlynxg/anet v0.0.5 // indirect
-	golang.org/x/sys v0.41.0 // indirect
+	golang.org/x/mobile v0.0.0-20250305212854-3a7bc9f8a4de // indirect
+	golang.org/x/mod v0.24.0 // indirect
+	golang.org/x/net v0.52.0 // indirect
+	golang.org/x/sync v0.12.0 // indirect
+	golang.org/x/sys v0.42.0 // indirect
+	golang.org/x/tools v0.31.0 // indirect
+	golang.zx2c4.com/wintun v0.0.0-20230126152724-0fa3db229ce2 // indirect
+	golang.zx2c4.com/wireguard v0.0.0-20250521234502-f333402bd9cb // indirect
 )

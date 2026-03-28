@@ -33,6 +33,8 @@ import (
 	"golang.zx2c4.com/wireguard/conn"
 	"golang.zx2c4.com/wireguard/device"
 	"golang.zx2c4.com/wireguard/tun"
+
+	_ "golang.org/x/mobile/bind" // required by gomobile
 )
 
 // State holds the running tunnel state
@@ -45,6 +47,11 @@ var (
 	wgDevice     *device.Device
 	wgCloseOnce  sync.Once
 )
+
+// LogHandler is an interface for receiving log messages (gomobile-compatible)
+type LogHandler interface {
+	OnLog(msg string)
+}
 
 // ─── Remote Logging ───
 
@@ -65,9 +72,16 @@ type logEntry struct {
 
 var rlog = &remoteLogger{}
 
-// SetLogCallback sets a callback for log messages (called from Android)
-func SetLogCallback(cb func(string)) {
+// setLogCallback sets a callback for log messages (internal use)
+func setLogCallback(cb func(string)) {
 	logCallback = cb
+}
+
+// SetLogHandler sets a gomobile-compatible log handler
+func SetLogHandler(h LogHandler) {
+	if h != nil {
+		logCallback = h.OnLog
+	}
 }
 
 // SetRemoteLog configures remote log shipping to VPS.
@@ -321,7 +335,7 @@ func Start(tunFd int, peerAddr, vkLink, yandexLink string, connections int, wgPr
 			return serverTurnCreds.user, serverTurnCreds.pass, serverTurnCreds.addr, nil
 		}
 		if connections <= 0 {
-			connections = 16
+			connections = 1
 		}
 	} else if vkLink != "" {
 		parts := strings.Split(vkLink, "join/")
