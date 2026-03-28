@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"math/big"
+	mrand "math/rand"
 
 	"regexp"
 
@@ -63,9 +64,10 @@ type Config struct {
 	Clients     []Client    `json:"clients"`
 	Links       []LinkEntry `json:"links,omitempty"`
 	VKAccounts  []VKAccount `json:"vk_accounts,omitempty"`
-	DTLSPort      int      `json:"dtls_port"`
-	AdminPass     string   `json:"admin_pass,omitempty"`     // legacy plaintext, migrated on startup
-	AdminPassHash string   `json:"admin_pass_hash,omitempty"` // bcrypt hash
+	DTLSPort      int        `json:"dtls_port"`
+	AdminPass     string     `json:"admin_pass,omitempty"`     // legacy plaintext, migrated on startup
+	AdminPassHash string     `json:"admin_pass_hash,omitempty"` // bcrypt hash
+	Pool          PoolConfig `json:"pool_config,omitempty"`
 }
 
 type Client struct {
@@ -94,6 +96,34 @@ type VKAccount struct {
 	AddedAt      string `json:"added_at"`
 	Enabled      bool   `json:"enabled"`
 	LastError    string `json:"last_error,omitempty"`
+	// Pool management fields
+	Status       string `json:"status,omitempty"`         // "idle", "calling", "cooldown", "rate_limited", "banned", "token_expired"
+	CallsToday   int    `json:"calls_today,omitempty"`
+	LastCallAt   int64  `json:"last_call_at,omitempty"`
+	NextCallAt   int64  `json:"next_call_at,omitempty"`
+	FailCount    int    `json:"fail_count,omitempty"`
+	LastResetDay string `json:"last_reset_day,omitempty"`
+}
+
+// PoolConfig holds settings for VK account pool rotation and natural behavior simulation
+type PoolConfig struct {
+	MaxCallsPerDay  int `json:"max_calls_per_day"`   // max calls per account per day (default 5)
+	MinCallMinutes  int `json:"min_call_min"`         // min call duration in minutes (default 60)
+	MaxCallMinutes  int `json:"max_call_min"`         // max call duration in minutes (default 180)
+	MinBreakMinutes int `json:"min_break_min"`        // min break between calls (default 30)
+	MaxBreakMinutes int `json:"max_break_min"`        // max break between calls (default 120)
+	RotationMinutes int `json:"rotation_min"`          // how often to rotate client assignments (default 120)
+}
+
+func defaultPoolConfig() PoolConfig {
+	return PoolConfig{
+		MaxCallsPerDay:  5,
+		MinCallMinutes:  60,
+		MaxCallMinutes:  180,
+		MinBreakMinutes: 30,
+		MaxBreakMinutes: 120,
+		RotationMinutes: 120,
+	}
 }
 
 func loadConfig(path string) (*Config, error) {
@@ -223,10 +253,15 @@ func (c *Config) applyWireGuard() error {
 		return fmt.Errorf("write wg0.conf: %w", err)
 	}
 
-	// Restart WireGuard with new config (sudo needed when running as non-root)
-	if err := exec.Command("/usr/bin/sudo", "/usr/bin/systemctl", "restart", "wg-quick@wg0").Run(); err != nil {
-		// Fallback: try without sudo (when running as root)
-		exec.Command("/usr/bin/systemctl", "restart", "wg-quick@wg0").Run()
+	// Hot-reload WireGuard peers without restarting the interface
+	syncCmd := exec.Command("bash", "-c", "wg syncconf wg0 <(wg-quick strip wg0)")
+	if out, err := syncCmd.CombinedOutput(); err != nil {
+		logger.Printf("wg syncconf failed: %s (%s), falling back to restart", err, string(out))
+		// Fallback: full restart
+		if err2 := exec.Command("systemctl", "restart", "wg-quick@wg0").Run(); err2 != nil {
+			exec.Command("wg-quick", "down", "wg0").Run()
+			exec.Command("wg-quick", "up", "wg0").Run()
+		}
 	}
 	return nil
 }
@@ -1174,15 +1209,23 @@ func apiAppConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	cfg.mu.RUnlock()
 
-	// Include server-side TURN credentials if available
-	turnCredsCache.RLock()
-	if turnCredsCache.Username != "" && time.Now().Before(turnCredsCache.ExpiresAt) {
-		appCfg["turn_username"] = turnCredsCache.Username
-		appCfg["turn_password"] = turnCredsCache.Password
-		appCfg["turn_address"] = turnCredsCache.Address
+	// Include server-side TURN credentials from pool (per-client assignment)
+	if user, pass, addr, ok := credPool.GetOrAssignCreds(found.Name); ok {
+		appCfg["turn_username"] = user
+		appCfg["turn_password"] = pass
+		appCfg["turn_address"] = addr
 		appCfg["creds_mode"] = "server"
+	} else {
+		// Fallback to legacy single cache
+		turnCredsCache.RLock()
+		if turnCredsCache.Username != "" && time.Now().Before(turnCredsCache.ExpiresAt) {
+			appCfg["turn_username"] = turnCredsCache.Username
+			appCfg["turn_password"] = turnCredsCache.Password
+			appCfg["turn_address"] = turnCredsCache.Address
+			appCfg["creds_mode"] = "server"
+		}
+		turnCredsCache.RUnlock()
 	}
-	turnCredsCache.RUnlock()
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(appCfg)
@@ -1209,7 +1252,7 @@ func validateOAuthState(state string) bool {
 	return time.Now().Before(v.(time.Time))
 }
 
-// Cached TURN credentials extracted by the server
+// Cached TURN credentials extracted by the server (legacy — kept for backward compat)
 var turnCredsCache struct {
 	sync.RWMutex
 	Username  string    `json:"username"`
@@ -1219,6 +1262,177 @@ var turnCredsCache struct {
 	ExpiresAt time.Time `json:"expires_at"`
 	AccountID string    `json:"account_id"`
 	Error     string    `json:"error,omitempty"`
+}
+
+// ─── Credential Pool ───
+
+// ActiveCall represents a live VK call producing TURN credentials
+type ActiveCall struct {
+	AccountID  string
+	AccountName string
+	Username   string
+	Password   string
+	Address    string
+	StartedAt  time.Time
+	ExpiresAt  time.Time // planned call end time (1-3 hours)
+	Clients    []string  // assigned VPN client names
+}
+
+// CredentialPool manages multiple VK accounts and their TURN credentials
+type CredentialPool struct {
+	mu          sync.RWMutex
+	activeCalls map[string]*ActiveCall // account_id -> active call
+	assignments map[string]string      // client_name -> account_id
+	roundRobin  int
+}
+
+var credPool = &CredentialPool{
+	activeCalls: make(map[string]*ActiveCall),
+	assignments: make(map[string]string),
+}
+
+// GetOrAssignCreds assigns a client to an active call and returns its credentials.
+// If the client is already assigned to an active call, returns those creds.
+// Otherwise picks the call with fewest assigned clients (round-robin).
+func (p *CredentialPool) GetOrAssignCreds(clientName string) (username, password, address string, ok bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	// Already assigned?
+	if accID, exists := p.assignments[clientName]; exists {
+		if call, active := p.activeCalls[accID]; active {
+			return call.Username, call.Password, call.Address, true
+		}
+		// Assigned account no longer active — reassign
+		delete(p.assignments, clientName)
+	}
+
+	// Find call with fewest clients
+	if len(p.activeCalls) == 0 {
+		return "", "", "", false
+	}
+
+	var bestCall *ActiveCall
+	var bestID string
+	bestCount := int(^uint(0) >> 1) // max int
+
+	for id, call := range p.activeCalls {
+		if len(call.Clients) < bestCount {
+			bestCount = len(call.Clients)
+			bestCall = call
+			bestID = id
+		}
+	}
+
+	if bestCall == nil {
+		return "", "", "", false
+	}
+
+	// Assign
+	p.assignments[clientName] = bestID
+	bestCall.Clients = append(bestCall.Clients, clientName)
+	return bestCall.Username, bestCall.Password, bestCall.Address, true
+}
+
+// ReleaseClient removes a client's assignment
+func (p *CredentialPool) ReleaseClient(clientName string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	accID, exists := p.assignments[clientName]
+	if !exists {
+		return
+	}
+	delete(p.assignments, clientName)
+
+	if call, ok := p.activeCalls[accID]; ok {
+		for i, c := range call.Clients {
+			if c == clientName {
+				call.Clients = append(call.Clients[:i], call.Clients[i+1:]...)
+				break
+			}
+		}
+	}
+}
+
+// AddCall registers an active call with TURN credentials
+func (p *CredentialPool) AddCall(accountID, accountName, username, password, address string, expiresAt time.Time) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	p.activeCalls[accountID] = &ActiveCall{
+		AccountID:   accountID,
+		AccountName: accountName,
+		Username:    username,
+		Password:    password,
+		Address:     address,
+		StartedAt:   time.Now(),
+		ExpiresAt:   expiresAt,
+	}
+}
+
+// EndCall removes an active call and unassigns all its clients
+func (p *CredentialPool) EndCall(accountID string) []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	call, ok := p.activeCalls[accountID]
+	if !ok {
+		return nil
+	}
+
+	orphanedClients := call.Clients
+	delete(p.activeCalls, accountID)
+
+	// Remove assignments for orphaned clients
+	for _, c := range orphanedClients {
+		delete(p.assignments, c)
+	}
+	return orphanedClients
+}
+
+// GetAnyCreds returns any available credentials (backward compat for single-account mode)
+func (p *CredentialPool) GetAnyCreds() (username, password, address string, ok bool) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	for _, call := range p.activeCalls {
+		return call.Username, call.Password, call.Address, true
+	}
+	return "", "", "", false
+}
+
+// Stats returns pool statistics
+func (p *CredentialPool) Stats() (activeCalls, assignedClients, totalClients int) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	activeCalls = len(p.activeCalls)
+	assignedClients = len(p.assignments)
+	for _, call := range p.activeCalls {
+		totalClients += len(call.Clients)
+	}
+	return
+}
+
+// ActiveCallsList returns a snapshot of all active calls (for admin UI)
+func (p *CredentialPool) ActiveCallsList() []map[string]interface{} {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	var result []map[string]interface{}
+	for _, call := range p.activeCalls {
+		result = append(result, map[string]interface{}{
+			"account_id":   call.AccountID,
+			"account_name": call.AccountName,
+			"turn_address": call.Address,
+			"started_at":   call.StartedAt.Format("15:04:05"),
+			"expires_at":   call.ExpiresAt.Format("15:04:05"),
+			"clients":      call.Clients,
+			"client_count": len(call.Clients),
+		})
+	}
+	return result
 }
 
 const (
@@ -1466,91 +1680,412 @@ func apiVKRefreshCreds(w http.ResponseWriter, r *http.Request) {
 	apiVKCredentials(w, r)
 }
 
-// refreshTurnCredentials fetches TURN credentials using a VK account
-func refreshTurnCredentials() {
-	cfg.mu.RLock()
-	link := cfg.ActiveLink
-	var account *VKAccount
-	for i, a := range cfg.VKAccounts {
-		if a.Enabled && a.AccessToken != "" {
-			acc := cfg.VKAccounts[i]
-			account = &acc
-			break
+// apiVKBulkAddTokens adds multiple VK tokens at once
+func apiVKBulkAddTokens(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST only", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		Tokens []struct {
+			Token string `json:"token"`
+			Name  string `json:"name"`
+		} `json:"tokens"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid JSON", http.StatusBadRequest)
+		return
+	}
+
+	added := 0
+	for _, t := range req.Tokens {
+		if t.Token == "" {
+			continue
 		}
-	}
-	cfg.mu.RUnlock()
+		name := t.Name
+		if name == "" {
+			name = fmt.Sprintf("account_%d", time.Now().UnixNano())
+		}
+		id := fmt.Sprintf("bulk_%d", time.Now().UnixNano())
 
-	if account == nil {
-		turnCredsCache.Lock()
-		turnCredsCache.Error = "no enabled VK accounts"
-		turnCredsCache.Unlock()
-		return
-	}
-	if link == "" {
-		turnCredsCache.Lock()
-		turnCredsCache.Error = "no active TURN link"
-		turnCredsCache.Unlock()
-		return
-	}
+		acc := VKAccount{
+			ID:          id,
+			Name:        name,
+			AccessToken: t.Token,
+			AddedAt:     time.Now().Format(time.RFC3339),
+			Enabled:     true,
+			Status:      "idle",
+		}
 
-	creds, err := turnauth.GetVKCredentialsWithToken(link, account.AccessToken)
-	if err != nil {
-		logger.Printf("TURN credential refresh failed (account=%s): %s", account.ID, err)
-		turnCredsCache.Lock()
-		turnCredsCache.Error = err.Error()
-		turnCredsCache.Unlock()
-
-		// Mark account error
 		cfg.mu.Lock()
-		for i, a := range cfg.VKAccounts {
-			if a.ID == account.ID {
-				cfg.VKAccounts[i].LastError = err.Error()
-				break
-			}
-		}
+		cfg.VKAccounts = append(cfg.VKAccounts, acc)
 		cfg.mu.Unlock()
+		added++
+		time.Sleep(10 * time.Millisecond) // ensure unique IDs
+	}
+
+	cfg.Save()
+	logger.Printf("Bulk added %d VK accounts", added)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"added": added,
+		"total": len(cfg.VKAccounts),
+	})
+}
+
+// apiVKToggleAccount enables/disables a VK account
+func apiVKToggleAccount(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST only", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid JSON", http.StatusBadRequest)
 		return
 	}
 
-	turnCredsCache.Lock()
-	turnCredsCache.Username = creds.Username
-	turnCredsCache.Password = creds.Password
-	turnCredsCache.Address = creds.Address
-	turnCredsCache.FetchedAt = time.Now()
-	turnCredsCache.ExpiresAt = time.Now().Add(10 * time.Minute) // conservative estimate
-	turnCredsCache.AccountID = account.ID
-	turnCredsCache.Error = ""
-	turnCredsCache.Unlock()
-
-	// Clear account error
 	cfg.mu.Lock()
+	found := false
 	for i, a := range cfg.VKAccounts {
-		if a.ID == account.ID {
-			cfg.VKAccounts[i].LastError = ""
+		if a.ID == req.ID {
+			cfg.VKAccounts[i].Enabled = !cfg.VKAccounts[i].Enabled
+			if !cfg.VKAccounts[i].Enabled {
+				// End active call if disabling
+				credPool.EndCall(a.ID)
+				cfg.VKAccounts[i].Status = "idle"
+			}
+			found = true
 			break
 		}
 	}
 	cfg.mu.Unlock()
 
-	logger.Printf("TURN credentials refreshed: user=%s addr=%s (account=%s)", creds.Username, creds.Address, account.ID)
+	if !found {
+		http.Error(w, "account not found", http.StatusNotFound)
+		return
+	}
+	cfg.Save()
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 }
 
-// startCredentialManager runs a background goroutine that refreshes TURN credentials
-func startCredentialManager(ctx context.Context) {
+// apiVKPoolStatus returns pool health statistics
+func apiVKPoolStatus(w http.ResponseWriter, r *http.Request) {
+	cfg.mu.RLock()
+	total := len(cfg.VKAccounts)
+	healthy, rateLimited, banned, tokenExpired, calling, cooldown := 0, 0, 0, 0, 0, 0
+	for _, a := range cfg.VKAccounts {
+		if !a.Enabled {
+			continue
+		}
+		switch a.Status {
+		case "calling":
+			calling++
+			healthy++
+		case "rate_limited":
+			rateLimited++
+		case "banned":
+			banned++
+		case "token_expired":
+			tokenExpired++
+		case "cooldown":
+			cooldown++
+			healthy++
+		default: // "idle" or ""
+			healthy++
+		}
+	}
+	pc := cfg.Pool
+	cfg.mu.RUnlock()
+
+	if pc.MinCallMinutes == 0 {
+		pc = defaultPoolConfig()
+	}
+
+	activeCalls, assignedClients, _ := credPool.Stats()
+	calls := credPool.ActiveCallsList()
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"total_accounts":    total,
+		"healthy":           healthy,
+		"calling":           calling,
+		"cooldown":          cooldown,
+		"rate_limited":      rateLimited,
+		"banned":            banned,
+		"token_expired":     tokenExpired,
+		"active_calls":      activeCalls,
+		"assigned_clients":  assignedClients,
+		"active_calls_list": calls,
+		"pool_config":       pc,
+	})
+}
+
+// apiVKPoolConfig updates pool rotation settings
+func apiVKPoolConfig(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST only", http.StatusMethodNotAllowed)
+		return
+	}
+	var pc PoolConfig
+	if err := json.NewDecoder(r.Body).Decode(&pc); err != nil {
+		http.Error(w, "invalid JSON", http.StatusBadRequest)
+		return
+	}
+
+	// Validate
+	if pc.MaxCallsPerDay < 1 {
+		pc.MaxCallsPerDay = 5
+	}
+	if pc.MinCallMinutes < 5 {
+		pc.MinCallMinutes = 5
+	}
+	if pc.MaxCallMinutes < pc.MinCallMinutes {
+		pc.MaxCallMinutes = pc.MinCallMinutes + 60
+	}
+	if pc.MinBreakMinutes < 1 {
+		pc.MinBreakMinutes = 1
+	}
+	if pc.MaxBreakMinutes < pc.MinBreakMinutes {
+		pc.MaxBreakMinutes = pc.MinBreakMinutes + 30
+	}
+	if pc.RotationMinutes < 10 {
+		pc.RotationMinutes = 10
+	}
+
+	cfg.mu.Lock()
+	cfg.Pool = pc
+	cfg.mu.Unlock()
+	cfg.Save()
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(pc)
+}
+
+// refreshTurnCredentials fetches TURN credentials for a single account (legacy + pool)
+func refreshTurnCredentials() {
+	// Delegate to call scheduler — start calls for eligible accounts
+	runSchedulerTick()
+}
+
+// startCallForAccount creates a VK call and gets TURN credentials for one account
+func startCallForAccount(account *VKAccount) error {
+	creds, err := turnauth.GetVKCredentialsWithToken("", account.AccessToken)
+	if err != nil {
+		logger.Printf("TURN credential fetch failed (account=%s): %s", account.ID, err)
+
+		// Classify error and update account status
+		cfg.mu.Lock()
+		for i, a := range cfg.VKAccounts {
+			if a.ID == account.ID {
+				cfg.VKAccounts[i].LastError = err.Error()
+				cfg.VKAccounts[i].FailCount++
+				if turnauth.IsRateLimited(err) {
+					cfg.VKAccounts[i].Status = "rate_limited"
+					cfg.VKAccounts[i].NextCallAt = time.Now().Add(30 * time.Minute).Unix()
+				} else if turnauth.IsTokenExpired(err) {
+					cfg.VKAccounts[i].Status = "token_expired"
+				} else if turnauth.IsBanned(err) {
+					cfg.VKAccounts[i].Status = "banned"
+					cfg.VKAccounts[i].Enabled = false
+				} else if cfg.VKAccounts[i].FailCount >= 3 {
+					cfg.VKAccounts[i].Status = "rate_limited"
+					cfg.VKAccounts[i].NextCallAt = time.Now().Add(15 * time.Minute).Unix()
+				}
+				break
+			}
+		}
+		cfg.mu.Unlock()
+		return err
+	}
+
+	// Success — get pool config for call duration
+	cfg.mu.RLock()
+	pc := cfg.Pool
+	cfg.mu.RUnlock()
+	if pc.MinCallMinutes == 0 {
+		pc = defaultPoolConfig()
+	}
+
+	callDuration := time.Duration(pc.MinCallMinutes+mrand.Intn(max(1, pc.MaxCallMinutes-pc.MinCallMinutes))) * time.Minute
+	expiresAt := time.Now().Add(callDuration)
+
+	// Add to credential pool
+	credPool.AddCall(account.ID, account.Name, creds.Username, creds.Password, creds.Address, expiresAt)
+
+	// Update legacy cache (backward compat)
+	turnCredsCache.Lock()
+	turnCredsCache.Username = creds.Username
+	turnCredsCache.Password = creds.Password
+	turnCredsCache.Address = creds.Address
+	turnCredsCache.FetchedAt = time.Now()
+	turnCredsCache.ExpiresAt = expiresAt
+	turnCredsCache.AccountID = account.ID
+	turnCredsCache.Error = ""
+	turnCredsCache.Unlock()
+
+	// Update account state
+	cfg.mu.Lock()
+	for i, a := range cfg.VKAccounts {
+		if a.ID == account.ID {
+			cfg.VKAccounts[i].LastError = ""
+			cfg.VKAccounts[i].FailCount = 0
+			cfg.VKAccounts[i].Status = "calling"
+			cfg.VKAccounts[i].CallsToday++
+			cfg.VKAccounts[i].LastCallAt = time.Now().Unix()
+			break
+		}
+	}
+	cfg.mu.Unlock()
+
+	logger.Printf("Call started: user=%s addr=%s (account=%s, duration=%s)", creds.Username, creds.Address, account.ID, callDuration)
+	return nil
+}
+
+// runSchedulerTick runs one iteration of the call scheduler
+func runSchedulerTick() {
+	now := time.Now()
+	today := now.Format("2006-01-02")
+
+	cfg.mu.RLock()
+	pc := cfg.Pool
+	accounts := make([]VKAccount, len(cfg.VKAccounts))
+	copy(accounts, cfg.VKAccounts)
+	cfg.mu.RUnlock()
+
+	if pc.MinCallMinutes == 0 {
+		pc = defaultPoolConfig()
+	}
+
+	// Phase 1: Reset daily counters if new day
+	cfg.mu.Lock()
+	for i := range cfg.VKAccounts {
+		if cfg.VKAccounts[i].LastResetDay != today {
+			cfg.VKAccounts[i].CallsToday = 0
+			cfg.VKAccounts[i].LastResetDay = today
+			// Reset rate-limited accounts at day boundary
+			if cfg.VKAccounts[i].Status == "rate_limited" {
+				cfg.VKAccounts[i].Status = "idle"
+				cfg.VKAccounts[i].FailCount = 0
+			}
+		}
+	}
+	cfg.mu.Unlock()
+
+	// Phase 2: End expired calls
+	credPool.mu.RLock()
+	var expiredCalls []string
+	for accID, call := range credPool.activeCalls {
+		if now.After(call.ExpiresAt) {
+			expiredCalls = append(expiredCalls, accID)
+		}
+	}
+	credPool.mu.RUnlock()
+
+	for _, accID := range expiredCalls {
+		orphans := credPool.EndCall(accID)
+		logger.Printf("Call ended for account %s, %d clients orphaned", accID, len(orphans))
+
+		// Set account to cooldown with random break
+		breakDuration := time.Duration(pc.MinBreakMinutes+mrand.Intn(max(1, pc.MaxBreakMinutes-pc.MinBreakMinutes))) * time.Minute
+		cfg.mu.Lock()
+		for i, a := range cfg.VKAccounts {
+			if a.ID == accID {
+				cfg.VKAccounts[i].Status = "cooldown"
+				cfg.VKAccounts[i].NextCallAt = now.Add(breakDuration).Unix()
+				break
+			}
+		}
+		cfg.mu.Unlock()
+	}
+
+	// Phase 3: Start new calls for eligible accounts
+	// Re-read accounts after updates
+	cfg.mu.RLock()
+	accounts = make([]VKAccount, len(cfg.VKAccounts))
+	copy(accounts, cfg.VKAccounts)
+	cfg.mu.RUnlock()
+
+	// Count active clients that need credentials
+	credPool.mu.RLock()
+	activeCallCount := len(credPool.activeCalls)
+	credPool.mu.RUnlock()
+
+	for _, acc := range accounts {
+		if !acc.Enabled || acc.AccessToken == "" {
+			continue
+		}
+		// Skip accounts already in a call
+		credPool.mu.RLock()
+		_, alreadyCalling := credPool.activeCalls[acc.ID]
+		credPool.mu.RUnlock()
+		if alreadyCalling {
+			continue
+		}
+		// Skip accounts at daily limit
+		if acc.CallsToday >= pc.MaxCallsPerDay {
+			continue
+		}
+		// Skip accounts in cooldown/rate_limited that aren't ready yet
+		if (acc.Status == "cooldown" || acc.Status == "rate_limited") && now.Unix() < acc.NextCallAt {
+			continue
+		}
+		// Skip banned/expired accounts
+		if acc.Status == "banned" || acc.Status == "token_expired" {
+			continue
+		}
+
+		// Start a call for this account
+		// Stagger: don't start more than one call per tick
+		if err := startCallForAccount(&acc); err == nil {
+			activeCallCount++
+			break // one call per tick to stagger naturally
+		}
+	}
+
+	// Update legacy turnCredsCache error if no active calls
+	if activeCallCount == 0 {
+		turnCredsCache.Lock()
+		if turnCredsCache.Error == "" {
+			enabledCount := 0
+			for _, a := range accounts {
+				if a.Enabled && a.AccessToken != "" {
+					enabledCount++
+				}
+			}
+			if enabledCount == 0 {
+				turnCredsCache.Error = "no enabled VK accounts"
+			}
+		}
+		turnCredsCache.Unlock()
+	}
+}
+
+// startCallScheduler runs the call scheduler as a background goroutine
+func startCallScheduler(ctx context.Context) {
 	// Initial fetch after 5 seconds (let server start up)
 	time.Sleep(5 * time.Second)
-	refreshTurnCredentials()
+	runSchedulerTick()
 
-	ticker := time.NewTicker(5 * time.Minute)
+	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			refreshTurnCredentials()
+			runSchedulerTick()
 		}
 	}
+}
+
+// startCredentialManager is an alias for startCallScheduler (backward compat)
+func startCredentialManager(ctx context.Context) {
+	startCallScheduler(ctx)
 }
 
 func apiLogs(w http.ResponseWriter, r *http.Request) {
@@ -1939,6 +2474,10 @@ func main() {
 	mux.HandleFunc("/api/vk/accounts/add-token", authMiddleware(apiVKAddToken))
 	mux.HandleFunc("/api/vk/credentials", authMiddleware(apiVKCredentials))
 	mux.HandleFunc("/api/vk/credentials/refresh", authMiddleware(apiVKRefreshCreds))
+	mux.HandleFunc("/api/vk/accounts/bulk-add", authMiddleware(apiVKBulkAddTokens))
+	mux.HandleFunc("/api/vk/accounts/toggle", authMiddleware(apiVKToggleAccount))
+	mux.HandleFunc("/api/vk/pool-status", authMiddleware(apiVKPoolStatus))
+	mux.HandleFunc("/api/vk/pool-config", authMiddleware(apiVKPoolConfig))
 	mux.HandleFunc("/api/logs", authMiddleware(apiLogs))
 	mux.HandleFunc("/api/metrics", authMiddleware(apiMetrics))
 	mux.HandleFunc("/api/device-logs", func(w http.ResponseWriter, r *http.Request) {

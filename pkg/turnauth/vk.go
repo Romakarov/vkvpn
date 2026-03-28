@@ -240,7 +240,7 @@ func GetVKCredentialsWithToken(link string, userAccessToken string) (*Credential
 		return nil, fmt.Errorf("calls.start: %w", err)
 	}
 	if errObj, ok := resp["error"].(map[string]interface{}); ok {
-		return nil, fmt.Errorf("calls.start error %v: %v", errObj["error_code"], errObj["error_msg"])
+		return nil, fmt.Errorf("calls.start: %w", NewVKAPIError(errObj))
 	}
 	joinLink, err := getStr(resp, "response", "ok_join_link")
 	if err != nil {
@@ -265,7 +265,7 @@ func GetVKCredentialsWithToken(link string, userAccessToken string) (*Credential
 		return nil, fmt.Errorf("getAnonymousToken: %w", err)
 	}
 	if errObj, ok := resp["error"].(map[string]interface{}); ok {
-		return nil, fmt.Errorf("getAnonymousToken error %v: %v", errObj["error_code"], errObj["error_msg"])
+		return nil, fmt.Errorf("getAnonymousToken: %w", NewVKAPIError(errObj))
 	}
 	callToken, err := getStr(resp, "response", "token")
 	if err != nil {
