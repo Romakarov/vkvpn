@@ -222,8 +222,9 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
-        if (link.isEmpty()) {
-            Toast.makeText(this, "No TURN link configured. Ask your admin.", Toast.LENGTH_LONG).show()
+        val turnAddress = prefs.getString("turn_address", "") ?: ""
+        if (link.isEmpty() && turnAddress.isEmpty()) {
+            Toast.makeText(this, "No TURN credentials. Configure VK token on server.", Toast.LENGTH_LONG).show()
             return
         }
 
