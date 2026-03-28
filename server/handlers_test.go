@@ -370,9 +370,6 @@ func TestApiAppConfig(t *testing.T) {
 	if resp["server"] != "10.0.0.1" {
 		t.Fatalf("expected server 10.0.0.1, got %v", resp["server"])
 	}
-	if resp["provider"] != "vk" {
-		t.Fatalf("expected provider vk, got %v", resp["provider"])
-	}
 	if resp["wg_address"] != "10.66.66.2" {
 		t.Fatalf("expected wg_address 10.66.66.2, got %v", resp["wg_address"])
 	}

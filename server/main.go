@@ -1160,8 +1160,6 @@ func apiAppConfig(w http.ResponseWriter, r *http.Request) {
 
 	appCfg := map[string]interface{}{
 		"server":           cfg.ServerIP,
-		"link":             cfg.ActiveLink,
-		"provider":         cfg.LinkType,
 		"wg_pubkey":        cfg.ServerPub,
 		"wg_address":       found.IP,
 		"wg_dns":           cfg.DNS,
