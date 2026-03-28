@@ -693,7 +693,7 @@ func newRateLimiter() *rateLimiter {
 
 const (
 	rateLimitWindow  = time.Minute
-	rateLimitMaxFail = 10
+	rateLimitMaxFail = 100
 )
 
 func (rl *rateLimiter) isLimited(ip string) bool {
@@ -783,7 +783,13 @@ func authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 
-		authLimiter.recordFailure(ip)
+		// Only count as failure if they actually tried to authenticate
+		// (provided a token/password that was wrong, not just missing auth)
+		tok := r.URL.Query().Get("token")
+		hdr := r.Header.Get("X-Admin-Token")
+		if tok != "" || hdr != "" {
+			authLimiter.recordFailure(ip)
+		}
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 	}
 }
