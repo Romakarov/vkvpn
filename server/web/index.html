@@ -227,6 +227,157 @@ input:focus, select:focus { border-color: var(--accent); }
 .link-display .type.yandex { background: rgba(254,202,87,0.2); color: var(--yellow); }
 .mt-12 { margin-top: 12px; }
 .mb-12 { margin-bottom: 12px; }
+
+/* Pool dashboard */
+.pool-dashboard {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 16px;
+  padding: 12px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.pool-stat {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  padding: 4px 10px;
+  border-radius: 6px;
+  background: rgba(255,255,255,0.03);
+}
+.pool-stat .num {
+  font-weight: 700;
+  font-size: 15px;
+}
+.pool-stat.st-total .num { color: var(--text); }
+.pool-stat.st-healthy .num { color: var(--green); }
+.pool-stat.st-calling .num { color: #74b9ff; }
+.pool-stat.st-cooldown .num { color: var(--yellow); }
+.pool-stat.st-rate-limited .num { color: #e17055; }
+.pool-stat.st-banned .num { color: var(--red); }
+
+/* Account table */
+.acct-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  margin-bottom: 12px;
+}
+.acct-table th {
+  text-align: left;
+  padding: 8px 10px;
+  border-bottom: 2px solid var(--border);
+  color: var(--text2);
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.acct-table td {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+}
+.acct-table tr:last-child td { border-bottom: none; }
+.status-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+}
+.status-badge.idle { background: rgba(136,136,160,0.15); color: var(--text2); }
+.status-badge.calling { background: rgba(116,185,255,0.15); color: #74b9ff; }
+.status-badge.cooldown { background: rgba(254,202,87,0.15); color: var(--yellow); }
+.status-badge.rate_limited { background: rgba(225,112,85,0.15); color: #e17055; }
+.status-badge.banned { background: rgba(255,107,107,0.15); color: var(--red); }
+.status-badge.token_expired { background: rgba(255,107,107,0.15); color: var(--red); }
+.status-badge.healthy { background: rgba(0,184,148,0.15); color: var(--green); }
+
+/* Collapsible sections */
+.collapse-section {
+  margin-top: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.collapse-section summary {
+  cursor: pointer;
+  padding: 10px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--accent2);
+  background: rgba(108,92,231,0.05);
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.collapse-section summary::-webkit-details-marker { display: none; }
+.collapse-section summary::before {
+  content: '\25B6';
+  font-size: 10px;
+  transition: transform 0.2s;
+}
+.collapse-section[open] summary::before { transform: rotate(90deg); }
+.collapse-section .section-body {
+  padding: 14px;
+  background: var(--card);
+}
+.collapse-section textarea {
+  width: 100%;
+  min-height: 100px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  font-family: 'SF Mono', Monaco, monospace;
+  font-size: 12px;
+  padding: 10px;
+  resize: vertical;
+}
+
+/* Pool config grid */
+.config-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+@media(max-width:600px) { .config-grid { grid-template-columns: 1fr; } }
+.config-grid .form-group { margin-bottom: 0; }
+.config-grid input[type="number"] {
+  width: 100%;
+  padding: 8px 10px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  font-size: 13px;
+}
+
+/* Active calls table */
+.calls-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.calls-table th {
+  text-align: left;
+  padding: 6px 8px;
+  border-bottom: 2px solid var(--border);
+  color: var(--text2);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+.calls-table td {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+}
+.calls-table tr:last-child td { border-bottom: none; }
 </style>
 </head>
 <body>
@@ -278,12 +429,29 @@ input:focus, select:focus { border-color: var(--accent); }
     <p style="font-size:13px;color:var(--text2);margin-bottom:12px">
       Server authenticates with VK to extract TURN credentials. Clients receive ready credentials.
     </p>
+
+    <!-- Pool Status Dashboard -->
+    <div id="pool-dashboard" class="pool-dashboard">
+      <div class="pool-stat st-total"><span class="num" id="ps-total">0</span> Total</div>
+      <div class="pool-stat st-healthy"><span class="num" id="ps-healthy">0</span> Healthy</div>
+      <div class="pool-stat st-calling"><span class="num" id="ps-calling">0</span> Calling</div>
+      <div class="pool-stat st-cooldown"><span class="num" id="ps-cooldown">0</span> Cooldown</div>
+      <div class="pool-stat st-rate-limited"><span class="num" id="ps-rate-limited">0</span> Rate Limited</div>
+      <div class="pool-stat st-banned"><span class="num" id="ps-banned">0</span> Banned</div>
+      <div class="pool-stat" style="margin-left:auto"><span class="num" id="ps-active-calls" style="color:#74b9ff">0</span> Active Calls</div>
+      <div class="pool-stat"><span class="num" id="ps-assigned-clients" style="color:var(--accent2)">0</span> Assigned Clients</div>
+    </div>
+
+    <!-- Enhanced Account Table -->
     <div id="vk-accounts-list" style="margin-bottom:12px"></div>
+
     <div id="vk-creds-status" style="margin-bottom:12px;font-size:13px;color:var(--text2)"></div>
     <div style="display:flex;gap:8px;flex-wrap:wrap">
       <button class="btn btn-primary" onclick="addVKAccount()">+ OAuth Login</button>
       <button class="btn btn-sm" onclick="refreshVKCreds()" style="align-self:center">Refresh Credentials</button>
     </div>
+
+    <!-- Manual token entry -->
     <details style="margin-top:12px">
       <summary style="cursor:pointer;color:var(--accent2);font-size:13px">Manual token entry</summary>
       <div class="inline-form" style="margin-top:8px">
@@ -293,6 +461,67 @@ input:focus, select:focus { border-color: var(--accent); }
       <p style="font-size:12px;color:var(--text2);margin-top:4px">
         Get token: <a href="https://oauth.vk.com/authorize?client_id=6287487&scope=audio,video,offline&response_type=token&v=5.264&redirect_uri=https://oauth.vk.com/blank.html" target="_blank" style="color:var(--accent2)">click here</a>, log in, copy access_token from URL
       </p>
+    </details>
+
+    <!-- Bulk Add Section -->
+    <details class="collapse-section" style="margin-top:12px">
+      <summary>Bulk Add Tokens</summary>
+      <div class="section-body">
+        <p style="font-size:12px;color:var(--text2);margin-bottom:8px">
+          Paste multiple tokens, one per line. Format: <code>token</code> or <code>name:token</code>
+        </p>
+        <textarea id="bulk-tokens-input" placeholder="token1&#10;MyAccount:token2&#10;token3"></textarea>
+        <div style="margin-top:8px;display:flex;gap:8px;align-items:center">
+          <button class="btn btn-success" onclick="bulkAddTokens()">Bulk Add</button>
+          <span id="bulk-add-status" style="font-size:12px;color:var(--text2)"></span>
+        </div>
+      </div>
+    </details>
+
+    <!-- Pool Config Panel -->
+    <details class="collapse-section" style="margin-top:12px">
+      <summary>Pool Configuration</summary>
+      <div class="section-body">
+        <div class="config-grid">
+          <div class="form-group">
+            <label>Max calls/day per account</label>
+            <input type="number" id="cfg-max-calls" min="1" max="100" value="10">
+          </div>
+          <div class="form-group">
+            <label>Rotation interval (min)</label>
+            <input type="number" id="cfg-rotation" min="1" max="1440" value="30">
+          </div>
+          <div class="form-group">
+            <label>Min call duration (min)</label>
+            <input type="number" id="cfg-min-call" min="1" max="120" value="5">
+          </div>
+          <div class="form-group">
+            <label>Max call duration (min)</label>
+            <input type="number" id="cfg-max-call" min="1" max="240" value="60">
+          </div>
+          <div class="form-group">
+            <label>Min break between calls (min)</label>
+            <input type="number" id="cfg-min-break" min="0" max="1440" value="10">
+          </div>
+          <div class="form-group">
+            <label>Max break between calls (min)</label>
+            <input type="number" id="cfg-max-break" min="0" max="1440" value="30">
+          </div>
+        </div>
+        <div style="margin-top:12px">
+          <button class="btn btn-primary" onclick="savePoolConfig()">Save Settings</button>
+        </div>
+      </div>
+    </details>
+
+    <!-- Active Calls Table -->
+    <details class="collapse-section" style="margin-top:12px">
+      <summary>Active Calls (<span id="active-calls-count">0</span>)</summary>
+      <div class="section-body">
+        <div id="active-calls-list">
+          <p style="font-size:13px;color:var(--text2)">No active calls</p>
+        </div>
+      </div>
     </details>
   </div>
 
@@ -627,23 +856,42 @@ function esc(s) {
 
 // ─── VK Accounts ───
 
+function acctStatusClass(status) {
+  const map = {idle:'idle', calling:'calling', cooldown:'cooldown', rate_limited:'rate_limited', banned:'banned', token_expired:'token_expired', healthy:'healthy'};
+  return map[status] || 'idle';
+}
+
+function acctStatusLabel(status) {
+  const map = {idle:'Idle', calling:'Calling', cooldown:'Cooldown', rate_limited:'Rate Limited', banned:'Banned', token_expired:'Token Expired', healthy:'Healthy'};
+  return map[status] || status || 'Idle';
+}
+
 async function loadVKAccounts() {
+  // Load accounts
   try {
     const accounts = await api('/api/vk/accounts');
     const list = document.getElementById('vk-accounts-list');
     if (!accounts || accounts.length === 0) {
       list.innerHTML = '<div style="color:var(--text2);padding:8px 0;font-size:13px">No VK accounts linked</div>';
     } else {
-      list.innerHTML = accounts.map(a => `
-        <div style="display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--border)">
-          <span style="flex:1;font-size:14px">
-            <strong>${esc(a.name)}</strong>
-            <span style="color:${a.enabled ? 'var(--green)' : 'var(--red)'}"> ${a.enabled ? 'active' : 'disabled'}</span>
-            ${a.last_error ? `<span style="color:var(--red);font-size:12px"> — ${esc(a.last_error)}</span>` : ''}
-          </span>
-          <button class="btn btn-sm btn-danger" onclick="deleteVKAccount('${esc(a.id)}')" style="padding:4px 8px;font-size:12px">Remove</button>
-        </div>
-      `).join('');
+      list.innerHTML = `<table class="acct-table">
+        <thead><tr>
+          <th>Name</th><th>Status</th><th>Calls Today</th><th>Last Error</th><th style="text-align:right">Actions</th>
+        </tr></thead>
+        <tbody>${accounts.map(a => {
+          const st = a.status || (a.enabled ? 'idle' : 'token_expired');
+          return `<tr>
+            <td><strong>${esc(a.name)}</strong></td>
+            <td><span class="status-badge ${acctStatusClass(st)}">${acctStatusLabel(st)}</span></td>
+            <td>${a.calls_today != null ? a.calls_today : '-'}</td>
+            <td style="font-size:12px;color:var(--red);max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${a.last_error ? esc(a.last_error) : ''}">${a.last_error ? esc(a.last_error) : '<span style="color:var(--text2)">-</span>'}</td>
+            <td style="text-align:right;white-space:nowrap">
+              <button class="btn btn-sm ${a.enabled ? 'btn-success' : 'btn-danger'}" onclick="toggleAccount('${esc(a.id)}')" style="padding:4px 8px;font-size:11px">${a.enabled ? 'Enabled' : 'Disabled'}</button>
+              <button class="btn btn-sm btn-danger" onclick="deleteVKAccount('${esc(a.id)}')" style="padding:4px 8px;font-size:11px">Delete</button>
+            </td>
+          </tr>`;
+        }).join('')}</tbody>
+      </table>`;
     }
   } catch(e) {}
 
@@ -661,6 +909,59 @@ async function loadVKAccounts() {
       el.innerHTML = 'TURN credentials: <span style="color:var(--text2)">none</span>';
     }
   } catch(e) {}
+
+  // Load pool status
+  loadPoolStatus();
+}
+
+async function loadPoolStatus() {
+  try {
+    const ps = await api('/api/vk/pool-status');
+
+    // Update dashboard numbers
+    const stats = ps.stats || {};
+    document.getElementById('ps-total').textContent = stats.total || 0;
+    document.getElementById('ps-healthy').textContent = stats.healthy || 0;
+    document.getElementById('ps-calling').textContent = stats.calling || 0;
+    document.getElementById('ps-cooldown').textContent = stats.cooldown || 0;
+    document.getElementById('ps-rate-limited').textContent = stats.rate_limited || 0;
+    document.getElementById('ps-banned').textContent = stats.banned || 0;
+    document.getElementById('ps-active-calls').textContent = stats.active_calls || 0;
+    document.getElementById('ps-assigned-clients').textContent = stats.assigned_clients || 0;
+
+    // Update active calls table
+    const calls = ps.active_calls_list || [];
+    document.getElementById('active-calls-count').textContent = calls.length;
+    const callsDiv = document.getElementById('active-calls-list');
+    if (calls.length === 0) {
+      callsDiv.innerHTML = '<p style="font-size:13px;color:var(--text2)">No active calls</p>';
+    } else {
+      callsDiv.innerHTML = `<table class="calls-table">
+        <thead><tr>
+          <th>Account</th><th>TURN Address</th><th>Started</th><th>Expires</th><th>Clients</th><th>Client Names</th>
+        </tr></thead>
+        <tbody>${calls.map(c => `<tr>
+          <td>${esc(c.account_name || '-')}</td>
+          <td style="font-family:monospace;font-size:11px">${esc(c.turn_address || '-')}</td>
+          <td>${c.started_at ? new Date(c.started_at).toLocaleTimeString() : '-'}</td>
+          <td>${c.expires_at ? new Date(c.expires_at).toLocaleTimeString() : '-'}</td>
+          <td>${c.client_count != null ? c.client_count : '-'}</td>
+          <td>${c.client_names ? c.client_names.map(n => esc(n)).join(', ') : '-'}</td>
+        </tr>`).join('')}</tbody>
+      </table>`;
+    }
+
+    // Load pool config into form
+    const cfg = ps.pool_config || {};
+    if (cfg.max_calls_per_day != null) document.getElementById('cfg-max-calls').value = cfg.max_calls_per_day;
+    if (cfg.rotation_interval_min != null) document.getElementById('cfg-rotation').value = cfg.rotation_interval_min;
+    if (cfg.min_call_duration_min != null) document.getElementById('cfg-min-call').value = cfg.min_call_duration_min;
+    if (cfg.max_call_duration_min != null) document.getElementById('cfg-max-call').value = cfg.max_call_duration_min;
+    if (cfg.min_break_min != null) document.getElementById('cfg-min-break').value = cfg.min_break_min;
+    if (cfg.max_break_min != null) document.getElementById('cfg-max-break').value = cfg.max_break_min;
+  } catch(e) {
+    // pool-status endpoint may not exist yet, ignore
+  }
 }
 
 async function addVKAccount() {
@@ -714,6 +1015,72 @@ async function refreshVKCreds() {
   }
 }
 
+async function toggleAccount(id) {
+  try {
+    await api('/api/vk/accounts/toggle', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({id})});
+    loadVKAccounts();
+  } catch(e) {
+    toast('Toggle failed: ' + e.message, 'error');
+  }
+}
+
+async function bulkAddTokens() {
+  const raw = document.getElementById('bulk-tokens-input').value.trim();
+  if (!raw) { toast('Paste tokens first', 'error'); return; }
+  const lines = raw.split('\n').map(l => l.trim()).filter(l => l);
+  const tokens = lines.map(line => {
+    // Extract token from URL if pasted
+    if (line.includes('access_token=')) {
+      const m = line.match(/access_token=([^&]+)/);
+      if (m) line = m[1];
+    }
+    const colonIdx = line.indexOf(':');
+    // Check if it looks like name:token (name won't have long hex chars)
+    if (colonIdx > 0 && colonIdx < 40 && !line.startsWith('http')) {
+      return { name: line.substring(0, colonIdx).trim(), token: line.substring(colonIdx + 1).trim() };
+    }
+    return { token: line };
+  });
+  const statusEl = document.getElementById('bulk-add-status');
+  statusEl.textContent = `Adding ${tokens.length} token(s)...`;
+  try {
+    const result = await api('/api/vk/accounts/bulk-add', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({tokens})
+    });
+    const added = result.added || tokens.length;
+    statusEl.textContent = `Added ${added} account(s)`;
+    document.getElementById('bulk-tokens-input').value = '';
+    toast(`Added ${added} account(s)`);
+    setTimeout(loadVKAccounts, 2000);
+    loadVKAccounts();
+  } catch(e) {
+    statusEl.textContent = 'Failed: ' + e.message;
+  }
+}
+
+async function savePoolConfig() {
+  const config = {
+    max_calls_per_day: parseInt(document.getElementById('cfg-max-calls').value) || 10,
+    rotation_interval_min: parseInt(document.getElementById('cfg-rotation').value) || 30,
+    min_call_duration_min: parseInt(document.getElementById('cfg-min-call').value) || 5,
+    max_call_duration_min: parseInt(document.getElementById('cfg-max-call').value) || 60,
+    min_break_min: parseInt(document.getElementById('cfg-min-break').value) || 10,
+    max_break_min: parseInt(document.getElementById('cfg-max-break').value) || 30,
+  };
+  try {
+    await api('/api/vk/pool-config', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(config)
+    });
+    toast('Pool config saved');
+  } catch(e) {
+    toast('Save failed: ' + e.message, 'error');
+  }
+}
+
 // Init
 loadStatus();
 loadLinks();
@@ -726,6 +1093,7 @@ setInterval(loadStatus, 10000);
 setInterval(loadLinks, 15000);
 setInterval(loadMetrics, 15000);
 setInterval(loadVKAccounts, 30000);
+setInterval(loadPoolStatus, 30000);
 
 // Enter to add client
 document.getElementById('new-client-name').addEventListener('keydown', e => {

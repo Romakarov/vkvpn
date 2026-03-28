@@ -2,6 +2,7 @@ package turnauth
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -147,5 +148,83 @@ func TestGetVKCredentialsBadJSON(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "JSON decode") {
 		t.Errorf("expected JSON decode error, got: %s", err)
+	}
+}
+
+// ─── VKAPIError Classification Tests ───
+
+func TestVKAPIErrorClassification(t *testing.T) {
+	tests := []struct {
+		name          string
+		code          int
+		msg           string
+		isRateLimited bool
+		isTokenExpired bool
+		isBanned      bool
+	}{
+		{"rate limited", 29, "Rate limit reached", true, false, false},
+		{"token expired code 5", 5, "User authorization failed", false, true, false},
+		{"token expired code 15", 15, "Access denied", false, true, false},
+		{"banned code 17", 17, "User validation required", false, false, true},
+		{"banned code 18", 18, "User was deleted or banned", false, false, true},
+		{"generic error", 100, "Some error", false, false, false},
+		{"zero code", 0, "", false, false, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := fmt.Errorf("wrapped: %w", &VKAPIError{Code: tt.code, Message: tt.msg})
+
+			if got := IsRateLimited(err); got != tt.isRateLimited {
+				t.Errorf("IsRateLimited(%d) = %v, want %v", tt.code, got, tt.isRateLimited)
+			}
+			if got := IsTokenExpired(err); got != tt.isTokenExpired {
+				t.Errorf("IsTokenExpired(%d) = %v, want %v", tt.code, got, tt.isTokenExpired)
+			}
+			if got := IsBanned(err); got != tt.isBanned {
+				t.Errorf("IsBanned(%d) = %v, want %v", tt.code, got, tt.isBanned)
+			}
+		})
+	}
+}
+
+func TestNewVKAPIError(t *testing.T) {
+	errObj := map[string]interface{}{
+		"error_code": float64(29),
+		"error_msg":  "Rate limit reached",
+	}
+	vkErr := NewVKAPIError(errObj)
+	if vkErr.Code != 29 {
+		t.Errorf("expected code 29, got %d", vkErr.Code)
+	}
+	if vkErr.Message != "Rate limit reached" {
+		t.Errorf("expected message 'Rate limit reached', got %q", vkErr.Message)
+	}
+	if !strings.Contains(vkErr.Error(), "VK API error 29") {
+		t.Errorf("expected error string to contain 'VK API error 29', got %q", vkErr.Error())
+	}
+}
+
+func TestNewVKAPIErrorMissingFields(t *testing.T) {
+	vkErr := NewVKAPIError(map[string]interface{}{})
+	if vkErr.Code != 0 {
+		t.Errorf("expected code 0, got %d", vkErr.Code)
+	}
+	if vkErr.Message != "" {
+		t.Errorf("expected empty message, got %q", vkErr.Message)
+	}
+}
+
+func TestVKAPIErrorNotWrapped(t *testing.T) {
+	// Plain error (not VKAPIError) should return false for all classifiers
+	err := fmt.Errorf("plain error")
+	if IsRateLimited(err) {
+		t.Error("plain error should not be rate limited")
+	}
+	if IsTokenExpired(err) {
+		t.Error("plain error should not be token expired")
+	}
+	if IsBanned(err) {
+		t.Error("plain error should not be banned")
 	}
 }
