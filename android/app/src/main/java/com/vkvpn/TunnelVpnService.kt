@@ -33,7 +33,7 @@ class TunnelVpnService : VpnService() {
         when (intent?.action) {
             ACTION_START -> {
                 val server = intent.getStringExtra("server") ?: return START_NOT_STICKY
-                val link = intent.getStringExtra("link") ?: return START_NOT_STICKY
+                val link = intent.getStringExtra("link") ?: ""
                 val provider = intent.getStringExtra("provider") ?: "vk"
                 val wgPrivKey = intent.getStringExtra("wg_privkey") ?: return START_NOT_STICKY
                 val wgAddress = intent.getStringExtra("wg_address") ?: "10.66.66.2"
