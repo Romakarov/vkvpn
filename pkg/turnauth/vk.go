@@ -174,19 +174,17 @@ func GetVKCredentials(link string) (*Credentials, error) {
 	return &Credentials{Username: user, Password: pass, Address: addr}, nil
 }
 
-// GetVKCredentialsWithToken extracts TURN credentials using a VK user access token
-// instead of the anonymous flow. Skips steps 1-2 (which are rate-limited/blocked)
-// and uses the user token directly for API calls.
+// GetVKCredentialsWithToken extracts TURN credentials using a VK user access token.
+//
+// Discovered flow (March 2026):
+//   1. calls.start (user token) → creates call, returns ok_join_link
+//   2. get_anonym_token (no auth) → anonymous token (step 1 of original flow, still works)
+//   3. calls.getAnonymousToken (anon token + join_link) → call-specific anonymToken
+//   4. OK.ru anonymLogin → session_key
+//   5. vchat.joinConversationByLink (anonymToken + session_key) → TURN credentials
+//
+// This bypasses the broken step 2 (calls.getAnonymousAccessTokenPayload) entirely.
 func GetVKCredentialsWithToken(link string, userAccessToken string) (*Credentials, error) {
-	// Extract join hash
-	if strings.Contains(link, "join/") {
-		parts := strings.Split(link, "join/")
-		link = parts[len(parts)-1]
-	}
-	if idx := strings.IndexAny(link, "/?#"); idx != -1 {
-		link = link[:idx]
-	}
-
 	doRequest := func(data string, url string) (map[string]interface{}, error) {
 		client := &http.Client{
 			Timeout: 20 * time.Second,
@@ -235,85 +233,64 @@ func GetVKCredentialsWithToken(link string, userAccessToken string) (*Credential
 		return s, nil
 	}
 
-	// With user token, we skip steps 1-2 (anonymous token + getAnonymousAccessTokenPayload)
-	// and use the user access_token directly for the calls API.
-
-	// Step A: Get anonymous call token using user token
-	// The user token can call calls.getAnonymousToken directly
-	data := fmt.Sprintf("vk_join_link=https://vk.com/call/join/%s&name=vkvpn&access_token=%s", link, userAccessToken)
-	resp, err := doRequest(data, vkBaseURLs.ApiVK+"/method/calls.getAnonymousToken?v=5.264")
+	// Step 1: Create a call using user token → get join link
+	data := fmt.Sprintf("access_token=%s", userAccessToken)
+	resp, err := doRequest(data, vkBaseURLs.ApiVK+"/method/calls.start?v=5.264")
 	if err != nil {
-		return nil, fmt.Errorf("get call token: %w", err)
+		return nil, fmt.Errorf("calls.start: %w", err)
 	}
-
-	// Check for VK API errors
 	if errObj, ok := resp["error"].(map[string]interface{}); ok {
-		code := errObj["error_code"]
-		msg := errObj["error_msg"]
-		return nil, fmt.Errorf("VK API error %v: %v", code, msg)
+		return nil, fmt.Errorf("calls.start error %v: %v", errObj["error_code"], errObj["error_msg"])
 	}
-
-	token4, err := getStr(resp, "response", "token")
+	joinLink, err := getStr(resp, "response", "ok_join_link")
 	if err != nil {
-		// Fallback: try calls.join to get call info directly
-		return getVKCredsFallback(link, userAccessToken, doRequest, getStr)
+		return nil, fmt.Errorf("calls.start parse: %w", err)
 	}
 
-	// Step B: OK.ru anonymous login (same as original step 5)
+	// Step 2: Get anonymous token (original step 1 — still works, no rate limit)
+	data = "client_secret=QbYic1K3lEV5kTGiqlq2&client_id=6287487&scopes=audio_anonymous%2Cvideo_anonymous%2Cphotos_anonymous%2Cprofile_anonymous&isApiOauthAnonymEnabled=false&version=1&app_id=6287487"
+	resp, err = doRequest(data, vkBaseURLs.LoginVK+"/?act=get_anonym_token")
+	if err != nil {
+		return nil, fmt.Errorf("get_anonym_token: %w", err)
+	}
+	anonToken, err := getStr(resp, "data", "access_token")
+	if err != nil {
+		return nil, fmt.Errorf("get_anonym_token parse: %w", err)
+	}
+
+	// Step 3: Get call-specific anonymous token
+	data = fmt.Sprintf("vk_join_link=https://vk.com/call/join/%s&name=vkvpn&access_token=%s", joinLink, anonToken)
+	resp, err = doRequest(data, vkBaseURLs.ApiVK+"/method/calls.getAnonymousToken?v=5.264")
+	if err != nil {
+		return nil, fmt.Errorf("getAnonymousToken: %w", err)
+	}
+	if errObj, ok := resp["error"].(map[string]interface{}); ok {
+		return nil, fmt.Errorf("getAnonymousToken error %v: %v", errObj["error_code"], errObj["error_msg"])
+	}
+	callToken, err := getStr(resp, "response", "token")
+	if err != nil {
+		return nil, fmt.Errorf("getAnonymousToken parse: %w", err)
+	}
+
+	// Step 4: OK.ru anonymous login
 	data = fmt.Sprintf("%s%s%s", "session_data=%7B%22version%22%3A2%2C%22device_id%22%3A%22", uuid.New(), "%22%2C%22client_version%22%3A1.1%2C%22client_type%22%3A%22SDK_JS%22%7D&method=auth.anonymLogin&format=JSON&application_key=CGMMEJLGDIHBABABA")
 	resp, err = doRequest(data, vkBaseURLs.OkCDN+"/fb.do")
 	if err != nil {
 		return nil, fmt.Errorf("okru login: %w", err)
 	}
-	token5, err := getStr(resp, "session_key")
+	sessionKey, err := getStr(resp, "session_key")
 	if err != nil {
 		return nil, fmt.Errorf("okru login parse: %w", err)
 	}
 
-	// Step C: Join conversation and get TURN credentials (same as original step 6)
-	data = fmt.Sprintf("joinLink=%s&isVideo=false&protocolVersion=5&anonymToken=%s&method=vchat.joinConversationByLink&format=JSON&application_key=CGMMEJLGDIHBABABA&session_key=%s", link, token4, token5)
+	// Step 5: Join conversation and get TURN credentials
+	data = fmt.Sprintf("joinLink=%s&isVideo=false&protocolVersion=5&anonymToken=%s&method=vchat.joinConversationByLink&format=JSON&application_key=CGMMEJLGDIHBABABA&session_key=%s", joinLink, callToken, sessionKey)
 	resp, err = doRequest(data, vkBaseURLs.OkCDN+"/fb.do")
 	if err != nil {
 		return nil, fmt.Errorf("join call: %w", err)
 	}
 
 	return parseTurnCredentials(resp)
-}
-
-// getVKCredsFallback tries to get TURN credentials using calls.start (creates a call)
-func getVKCredsFallback(link, token string,
-	doRequest func(string, string) (map[string]interface{}, error),
-	getStr func(map[string]interface{}, ...string) (string, error),
-) (*Credentials, error) {
-	// Try calls.join with user token — may return ICE config
-	data := fmt.Sprintf("join_link=https://vk.com/call/join/%s&access_token=%s", link, token)
-	resp, err := doRequest(data, vkBaseURLs.ApiVK+"/method/calls.join?v=5.264")
-	if err != nil {
-		return nil, fmt.Errorf("calls.join: %w", err)
-	}
-
-	if errObj, ok := resp["error"].(map[string]interface{}); ok {
-		code := errObj["error_code"]
-		msg := errObj["error_msg"]
-		return nil, fmt.Errorf("calls.join error %v: %v", code, msg)
-	}
-
-	// Try to extract TURN server from the join response
-	if turnServer, ok := resp["response"].(map[string]interface{}); ok {
-		if ts, ok := turnServer["turn_server"].(map[string]interface{}); ok {
-			user, _ := ts["username"].(string)
-			pass, _ := ts["credential"].(string)
-			if urls, ok := ts["urls"].([]interface{}); ok && len(urls) > 0 {
-				if u, ok := urls[0].(string); ok && user != "" && pass != "" {
-					clean := strings.Split(u, "?")[0]
-					addr := strings.TrimPrefix(strings.TrimPrefix(clean, "turn:"), "turns:")
-					return &Credentials{Username: user, Password: pass, Address: addr}, nil
-				}
-			}
-		}
-	}
-
-	return nil, fmt.Errorf("could not extract TURN credentials from VK API (both getAnonymousToken and calls.join failed)")
 }
 
 // parseTurnCredentials extracts TURN credentials from an OK.ru API response
