@@ -104,7 +104,8 @@ class TunnelVpnService : VpnService() {
                         vkLink, yaLink,
                         0L, wgPrivKey, serverPubKey,
                         dtlsFingerprint,
-                        turnUser, turnPass, turnAddr
+                        turnUser, turnPass, turnAddr,
+                        "" // telemostLink (VP8 fallback, not used yet)
                     )
                 } else {
                     Tunnel.start(
