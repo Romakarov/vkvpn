@@ -23,14 +23,14 @@ if [ -z "$PEER" ]; then
   read -p "Number of connections (16 for VK, 1 for Yandex, default 16): " CONNS
   CONNS=${CONNS:-16}
 
-  # Detect provider
-  if echo "$LINK" | grep -qi "vk\|join"; then
-    PROVIDER="vk"
-    LINK_FLAG="-vk-link"
-  else
-    PROVIDER="yandex"
-    LINK_FLAG="-yandex-link"
+  # Detect provider (Yandex Telemost deprecated since March 2026)
+  if echo "$LINK" | grep -qi "telemost\|yandex"; then
+    echo "ERROR: Yandex Telemost TURN is no longer available (blocked relay to external IPs)."
+    echo "Please use a VK call link instead."
+    exit 1
   fi
+  PROVIDER="vk"
+  LINK_FLAG="-vk-link"
 
   # Save config
   cat > "$CONFIG_FILE" <<EOF

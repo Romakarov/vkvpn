@@ -17,14 +17,14 @@ if "%PEER%"=="" (
     set /p CONNS="Connections (16 for VK, 1 for Yandex, default 16): "
     if "!CONNS!"=="" set CONNS=16
 
-    echo !LINK! | findstr /i "vk join" >nul
+    echo !LINK! | findstr /i "telemost yandex" >nul
     if !errorlevel!==0 (
-        set PROVIDER=vk
-        set LINK_FLAG=-vk-link
-    ) else (
-        set PROVIDER=yandex
-        set LINK_FLAG=-yandex-link
+        echo ERROR: Yandex Telemost TURN is no longer available.
+        echo Please use a VK call link instead.
+        exit /b 1
     )
+    set PROVIDER=vk
+    set LINK_FLAG=-vk-link
 
     (
         echo PEER=!PEER!

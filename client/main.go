@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"crypto/tls"
 	"encoding/hex"
@@ -22,11 +23,22 @@ import (
 
 	"github.com/Romakarov/vkvpn/pkg/packetpipe"
 	"github.com/Romakarov/vkvpn/pkg/turnauth"
+	"github.com/Romakarov/vkvpn/pkg/vkcall"
+	"github.com/Romakarov/vkvpn/pkg/vp8tunnel"
 	"github.com/pion/dtls/v3"
 	"github.com/pion/dtls/v3/pkg/crypto/selfsign"
 	"github.com/pion/logging"
 	"github.com/pion/turn/v5"
 )
+
+// sessionID is a 16-byte UUID generated once per client start.
+// All DTLS connections from this client send it as the first packet
+// so the server can group them into one WireGuard session.
+var sessionID [16]byte
+
+func init() {
+	rand.Read(sessionID[:])
+}
 
 // ─── Credential functions ───
 
@@ -122,6 +134,19 @@ func oneDtlsConnection(ctx context.Context, peer *net.UDPAddr, listenConn net.Pa
 		log.Printf("Closed DTLS connection\n")
 	}()
 	log.Printf("Established DTLS connection!\n")
+
+	// Send session handshake: magic byte 0x00 + 16-byte Session UUID.
+	// This lets the server distinguish new clients from legacy ones
+	// (WireGuard message types start with bytes 1-4, never 0x00).
+	handshake := make([]byte, 1+len(sessionID))
+	handshake[0] = 0x00 // magic byte
+	copy(handshake[1:], sessionID[:])
+	if _, err1 = dtlsConn.Write(handshake); err1 != nil {
+		err = fmt.Errorf("failed to send session handshake: %s", err1)
+		return
+	}
+	log.Printf("Session ID sent: %x\n", sessionID[:4])
+
 	if okchan != nil {
 		go func() {
 			for {
@@ -436,6 +461,7 @@ func main() {
 	listen := flag.String("listen", "127.0.0.1:9000", "listen on ip:port")
 	vklink := flag.String("vk-link", "", "VK calls invite link \"https://vk.com/call/join/...\"")
 	yalink := flag.String("yandex-link", "", "Yandex telemost invite link \"https://telemost.yandex.ru/j/...\"")
+	vp8mode := flag.Bool("vp8", false, "use VP8 transport (data inside VK Call video) instead of TURN")
 	peerAddr := flag.String("peer", "", "peer server address (host:port)")
 	dtlsFingerprint := flag.String("dtls-fingerprint", "", "expected DTLS server certificate SHA-256 fingerprint (hex)")
 	n := flag.Int("n", 0, "connections to TURN (default 16 for VK, 1 for Yandex)")
@@ -448,6 +474,16 @@ func main() {
 	if *dtlsFingerprint != "" {
 		expectedFingerprint = strings.ToLower(*dtlsFingerprint)
 	}
+	// VP8 mode — tunnel data through VK Call video stream
+	if *vp8mode {
+		if *vklink == "" {
+			log.Fatalf("VP8 mode requires -vk-link to join a VK call")
+		}
+		log.Printf("VP8 transport mode: data inside VK Call video stream")
+		runVP8Client(ctx, *listen, *vklink)
+		return
+	}
+
 	if *peerAddr == "" {
 		log.Panicf("Need peer address!")
 	}
@@ -470,8 +506,8 @@ func main() {
 			*n = 16
 		}
 	} else {
-		if (*vklink == "") == (*yalink == "") {
-			log.Panicf("Need either vk-link or yandex-link (or --turn-user/--turn-pass/--turn-addr)!")
+		if *vklink == "" && *yalink == "" {
+			log.Panicf("Need -vk-link (or --turn-user/--turn-pass/--turn-addr, or -vp8 -vk-link)!")
 		}
 		if *vklink != "" {
 			parts := strings.Split(*vklink, "join/")
@@ -481,17 +517,15 @@ func main() {
 				*n = 16
 			}
 		} else {
-			parts := strings.Split(*yalink, "j/")
-			link = parts[len(parts)-1]
-			getCreds = getYandexCreds
-			if *n <= 0 {
-				*n = 1
-			}
+			log.Fatalf("Yandex Telemost TURN is no longer available. Use -vk-link or --telemost-link instead.")
 		}
 		if idx := strings.IndexAny(link, "/?#"); idx != -1 {
 			link = link[:idx]
 		}
 	}
+
+	// Store VK link for potential VP8 fallback
+	vp8Fallback := *vklink
 	params := &turnParams{
 		*host,
 		*port,
@@ -565,4 +599,123 @@ func main() {
 	}
 
 	wg1.Wait()
+
+	// If TURN transport ended and VP8 fallback is configured, switch to it
+	if vp8Fallback != "" && ctx.Err() == nil {
+		log.Printf("TURN transport ended — falling back to VP8 via Telemost: %s", vp8Fallback)
+		runVP8Client(ctx, *listen, vp8Fallback)
+	}
+}
+
+// ─── VP8/Telemost Transport ───
+
+// runVP8Client joins a VK call via VP8 tunnel and bridges WireGuard packets
+// through the video stream. This is the fallback transport when TURN relay
+// is blocked. The VK join link is used to connect to the same call as the server.
+func runVP8Client(ctx context.Context, listenAddr string, vkLink string) {
+	// Listen for WireGuard packets on local UDP
+	listenUDP, err := net.ResolveUDPAddr("udp", listenAddr)
+	if err != nil {
+		log.Fatalf("Resolve listen addr: %s", err)
+	}
+	wgConn, err := net.ListenUDP("udp", listenUDP)
+	if err != nil {
+		log.Fatalf("Listen UDP: %s", err)
+	}
+	defer wgConn.Close()
+	log.Printf("VP8 client listening on %s for WireGuard", listenAddr)
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
+		client := vkcall.NewClient(log.Default())
+		tunnelReady := make(chan *vp8tunnel.Tunnel, 1)
+		client.OnTunnel = func(t *vp8tunnel.Tunnel) {
+			tunnelReady <- t
+		}
+
+		// Join VK call in background
+		callDone := make(chan error, 1)
+		go func() {
+			callDone <- client.JoinLink(ctx, vkLink)
+		}()
+
+		// Wait for tunnel or call failure
+		select {
+		case tunnel := <-tunnelReady:
+			log.Printf("VP8 tunnel ready — bridging WireGuard")
+			pconn := vp8tunnel.NewPacketConn(tunnel)
+			bridgeVP8(ctx, wgConn, pconn, tunnel.Done())
+			log.Printf("VP8 bridge ended")
+
+		case err := <-callDone:
+			if ctx.Err() != nil {
+				return
+			}
+			log.Printf("VP8 call failed: %v", err)
+		}
+
+		client.Close()
+		if ctx.Err() != nil {
+			return
+		}
+		log.Printf("Reconnecting VP8 in 5s...")
+		time.Sleep(5 * time.Second)
+	}
+}
+
+// bridgeVP8 forwards packets between local WireGuard UDP and VP8 tunnel.
+func bridgeVP8(ctx context.Context, wgConn *net.UDPConn, pconn *vp8tunnel.PacketConn, tunnelDone <-chan struct{}) {
+	ctx2, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	var wgAddr atomic.Value // stores the WG client's address
+
+	// WG → VP8
+	go func() {
+		defer cancel()
+		buf := make([]byte, 1600)
+		for {
+			select {
+			case <-ctx2.Done():
+				return
+			case <-tunnelDone:
+				return
+			default:
+			}
+			wgConn.SetReadDeadline(time.Now().Add(5 * time.Minute))
+			n, addr, err := wgConn.ReadFromUDP(buf)
+			if err != nil {
+				return
+			}
+			wgAddr.Store(addr)
+			if _, err := pconn.WriteTo(buf[:n], nil); err != nil {
+				return
+			}
+		}
+	}()
+
+	// VP8 → WG
+	buf := make([]byte, 1600)
+	for {
+		select {
+		case <-ctx2.Done():
+			return
+		case <-tunnelDone:
+			return
+		default:
+		}
+		n, _, err := pconn.ReadFrom(buf)
+		if err != nil {
+			return
+		}
+		addr, _ := wgAddr.Load().(*net.UDPAddr)
+		if addr != nil {
+			wgConn.WriteToUDP(buf[:n], addr)
+		}
+	}
 }

@@ -40,7 +40,10 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/Romakarov/vkvpn/pkg/sessionmux"
 	"github.com/Romakarov/vkvpn/pkg/turnauth"
+	"github.com/Romakarov/vkvpn/pkg/vkcall"
+	"github.com/Romakarov/vkvpn/pkg/vp8tunnel"
 	"github.com/pion/dtls/v3"
 	"github.com/pion/dtls/v3/pkg/crypto/selfsign"
 )
@@ -68,6 +71,9 @@ type Config struct {
 	AdminPass     string     `json:"admin_pass,omitempty"`     // legacy plaintext, migrated on startup
 	AdminPassHash string     `json:"admin_pass_hash,omitempty"` // bcrypt hash
 	Pool          PoolConfig `json:"pool_config,omitempty"`
+	// VP8 transport — second protocol that tunnels data through VK Call video stream.
+	// Uses VKAccounts pool to auto-create calls. No manual links needed.
+	VP8Enabled bool `json:"vp8_enabled,omitempty"`
 }
 
 type Client struct {
@@ -508,6 +514,11 @@ func runDTLSServer(ctx context.Context, listenAddr string, connectAddr string) {
 
 	logger.Printf("DTLS server listening on %s", listenAddr)
 
+	// Session multiplexer: groups DTLS connections by client session ID.
+	// Each session gets ONE UDP socket to WireGuard (prevents endpoint thrashing).
+	mux := sessionmux.NewMux(connectAddr, logger)
+	defer mux.Stop()
+
 	// Limit concurrent DTLS handshakes to prevent DoS
 	handshakeSem := make(chan struct{}, 50)
 
@@ -562,73 +573,224 @@ func runDTLSServer(ctx context.Context, listenAddr string, connectAddr string) {
 			cancel1()
 			logger.Println("DTLS handshake done")
 
-			serverConn, err := net.Dial("udp", connectAddr)
+			// Read first packet to determine client type.
+			// New clients send magic byte 0x00 + 16-byte Session UUID.
+			// Legacy clients send WireGuard packets (first byte 1-4).
+			sid, isSession, firstPkt, err := sessionmux.ReadSessionHandshake(conn)
 			if err != nil {
-				logger.Printf("Connect error: %s", err)
+				logger.Printf("First packet read error: %s", err)
 				return
 			}
-			defer serverConn.Close()
 
-			var bridgeWg sync.WaitGroup
-			bridgeWg.Add(2)
-			ctx2, cancel2 := context.WithCancel(ctx)
-			context.AfterFunc(ctx2, func() {
-				conn.SetDeadline(time.Now())
-				serverConn.SetDeadline(time.Now())
-			})
+			if !isSession {
+				// Legacy client — create dedicated WG socket (backward compatible)
+				logger.Printf("Legacy client from %s (no session ID)", conn.RemoteAddr())
+				legacyBridgeWithFirstPacket(ctx, conn, connectAddr, firstPkt)
+				return
+			}
 
-			go func() {
-				defer bridgeWg.Done()
-				defer cancel2()
-				buf := make([]byte, 1600)
-				for {
-					select {
-					case <-ctx2.Done():
-						return
-					default:
-					}
-					conn.SetReadDeadline(time.Now().Add(5 * time.Minute))
-					n, err := conn.Read(buf)
-					if err != nil {
-						logger.Printf("Read error: %s", err)
-						return
-					}
-					serverConn.SetWriteDeadline(time.Now().Add(5 * time.Minute))
-					if _, err = serverConn.Write(buf[:n]); err != nil {
-						logger.Printf("Write error: %s", err)
-						return
-					}
-				}
-			}()
+			sess, err := mux.GetOrCreateSession(sid)
+			if err != nil {
+				logger.Printf("Session create error: %s", err)
+				return
+			}
+			sess.AddConn(conn)
+			defer sess.RemoveConn(conn)
 
-			go func() {
-				defer bridgeWg.Done()
-				defer cancel2()
-				buf := make([]byte, 1600)
-				for {
-					select {
-					case <-ctx2.Done():
-						return
-					default:
-					}
-					serverConn.SetReadDeadline(time.Now().Add(30 * time.Minute))
-					n, err := serverConn.Read(buf)
-					if err != nil {
-						logger.Printf("Read error: %s", err)
-						return
-					}
-					conn.SetWriteDeadline(time.Now().Add(30 * time.Minute))
-					if _, err = conn.Write(buf[:n]); err != nil {
-						logger.Printf("Write error: %s", err)
-						return
-					}
-				}
-			}()
+			// Start WG→DTLS bridge exactly once per session (sync.Once inside)
+			sess.StartWGBridge()
 
-			bridgeWg.Wait()
-			logger.Printf("DTLS connection closed: %s", conn.RemoteAddr())
+			logger.Printf("DTLS conn joined session %s (conns: %d)", sid, sess.ConnCount())
+
+			// DTLS→WG bridge for this connection
+			sessionmux.BridgeDTLSToWG(sess, conn)
+
+			logger.Printf("DTLS connection closed: %s (session %s, remaining: %d)",
+				conn.RemoteAddr(), sid, sess.ConnCount())
 		}(conn)
 	}
+}
+
+// legacyBridgeWithFirstPacket handles legacy clients that don't send a Session ID.
+// firstPkt is the WireGuard packet already read from the connection.
+func legacyBridgeWithFirstPacket(ctx context.Context, conn net.Conn, connectAddr string, firstPkt []byte) {
+	serverConn, err := net.Dial("udp", connectAddr)
+	if err != nil {
+		logger.Printf("Connect error: %s", err)
+		return
+	}
+	defer serverConn.Close()
+
+	// Forward the first WG packet that was already read
+	if len(firstPkt) > 0 {
+		if _, err = serverConn.Write(firstPkt); err != nil {
+			logger.Printf("Write first packet error: %s", err)
+			return
+		}
+	}
+
+	var bridgeWg sync.WaitGroup
+	bridgeWg.Add(2)
+	ctx2, cancel2 := context.WithCancel(ctx)
+	context.AfterFunc(ctx2, func() {
+		conn.SetDeadline(time.Now())
+		serverConn.SetDeadline(time.Now())
+	})
+
+	go func() {
+		defer bridgeWg.Done()
+		defer cancel2()
+		buf := make([]byte, 1600)
+		for {
+			select {
+			case <-ctx2.Done():
+				return
+			default:
+			}
+			conn.SetReadDeadline(time.Now().Add(5 * time.Minute))
+			n, err := conn.Read(buf)
+			if err != nil {
+				return
+			}
+			serverConn.SetWriteDeadline(time.Now().Add(5 * time.Minute))
+			if _, err = serverConn.Write(buf[:n]); err != nil {
+				return
+			}
+		}
+	}()
+
+	go func() {
+		defer bridgeWg.Done()
+		defer cancel2()
+		buf := make([]byte, 1600)
+		for {
+			select {
+			case <-ctx2.Done():
+				return
+			default:
+			}
+			serverConn.SetReadDeadline(time.Now().Add(30 * time.Minute))
+			n, err := serverConn.Read(buf)
+			if err != nil {
+				return
+			}
+			conn.SetWriteDeadline(time.Now().Add(30 * time.Minute))
+			if _, err = conn.Write(buf[:n]); err != nil {
+				return
+			}
+		}
+	}()
+
+	bridgeWg.Wait()
+	logger.Printf("Legacy DTLS connection closed: %s", conn.RemoteAddr())
+}
+
+// ─── VP8/Telemost Server (secondary transport) ───
+
+// runVP8Server creates VK calls and bridges VP8 tunnel to WireGuard.
+// Uses the VKAccounts pool to auto-create calls — no manual links needed.
+// Automatically reconnects and rotates accounts.
+func runVP8Server(ctx context.Context, wgAddr string) {
+	logger.Printf("VP8 transport starting (auto VK Call mode)")
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
+		// Find an available VK account
+		token := getAvailableVKToken()
+		if token == "" {
+			logger.Printf("VP8: no available VK accounts, retrying in 30s...")
+			select {
+			case <-time.After(30 * time.Second):
+			case <-ctx.Done():
+				return
+			}
+			continue
+		}
+
+		client := vkcall.NewClient(logger)
+		client.OnTunnel = func(tunnel *vp8tunnel.Tunnel) {
+			logger.Printf("VP8 tunnel established — bridging to WireGuard %s", wgAddr)
+			bridgeVP8ToWG(tunnel, wgAddr)
+		}
+
+		err := client.JoinCall(ctx, token)
+		client.Close()
+		if ctx.Err() != nil {
+			return
+		}
+		logger.Printf("VP8 call ended: %v — reconnecting in 5s...", err)
+		select {
+		case <-time.After(5 * time.Second):
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+// getAvailableVKToken returns an OAuth token from the first enabled VK account.
+func getAvailableVKToken() string {
+	cfg.mu.RLock()
+	defer cfg.mu.RUnlock()
+	for _, acc := range cfg.VKAccounts {
+		if acc.Enabled && acc.AccessToken != "" && acc.Status != "banned" && acc.Status != "token_expired" {
+			return acc.AccessToken
+		}
+	}
+	return ""
+}
+
+// bridgeVP8ToWG bridges a VP8 tunnel to WireGuard UDP.
+func bridgeVP8ToWG(tunnel *vp8tunnel.Tunnel, wgAddr string) {
+	pconn := vp8tunnel.NewPacketConn(tunnel)
+
+	wgConn, err := net.Dial("udp", wgAddr)
+	if err != nil {
+		logger.Printf("VP8: WG dial error: %s", err)
+		return
+	}
+	defer wgConn.Close()
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	// VP8 → WG
+	go func() {
+		defer wg.Done()
+		buf := make([]byte, 1600)
+		for {
+			n, _, err := pconn.ReadFrom(buf)
+			if err != nil {
+				return
+			}
+			if _, err = wgConn.Write(buf[:n]); err != nil {
+				return
+			}
+		}
+	}()
+
+	// WG → VP8
+	go func() {
+		defer wg.Done()
+		buf := make([]byte, 1600)
+		for {
+			wgConn.SetReadDeadline(time.Now().Add(30 * time.Minute))
+			n, err := wgConn.Read(buf)
+			if err != nil {
+				return
+			}
+			if _, err = pconn.WriteTo(buf[:n], nil); err != nil {
+				return
+			}
+		}
+	}()
+
+	wg.Wait()
+	logger.Printf("VP8 bridge closed")
 }
 
 // ─── Web API handlers ───
@@ -854,6 +1016,39 @@ func detectLinkType(link string) string {
 		return "yandex"
 	}
 	return ""
+}
+
+func apiVP8Config(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		cfg.mu.RLock()
+		resp := map[string]interface{}{
+			"enabled": cfg.VP8Enabled,
+		}
+		cfg.mu.RUnlock()
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+
+	case http.MethodPost:
+		var req struct {
+			Enabled *bool `json:"enabled"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		cfg.mu.Lock()
+		if req.Enabled != nil {
+			cfg.VP8Enabled = *req.Enabled
+		}
+		cfg.mu.Unlock()
+		cfg.Save()
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+
+	default:
+		http.Error(w, "GET or POST", http.StatusMethodNotAllowed)
+	}
 }
 
 func apiSetLink(w http.ResponseWriter, r *http.Request) {
@@ -1226,6 +1421,13 @@ func apiAppConfig(w http.ResponseWriter, r *http.Request) {
 		}
 		turnCredsCache.RUnlock()
 	}
+
+	// Include VP8 transport status
+	cfg.mu.RLock()
+	if cfg.VP8Enabled {
+		appCfg["vp8_enabled"] = true
+	}
+	cfg.mu.RUnlock()
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(appCfg)
@@ -2440,8 +2642,16 @@ func main() {
 		logger.Fatalf("Forced exit...")
 	}()
 
-	// Start DTLS server
+	// Start DTLS server (primary transport: TURN)
 	go runDTLSServer(ctx, *dtlsAddr, *wgConnect)
+
+	// Start VP8 server (secondary transport: data inside VK Call video stream)
+	cfg.mu.RLock()
+	vp8On := cfg.VP8Enabled
+	cfg.mu.RUnlock()
+	if vp8On {
+		go runVP8Server(ctx, *wgConnect)
+	}
 
 	// Start background TURN credential manager
 	go startCredentialManager(ctx)
@@ -2461,6 +2671,7 @@ func main() {
 	mux.HandleFunc("/api/link", authMiddleware(apiSetLink))
 	mux.HandleFunc("/api/link/delete", authMiddleware(apiDeleteLink))
 	mux.HandleFunc("/api/link/active", authMiddleware(apiActiveLink))
+	mux.HandleFunc("/api/vp8", authMiddleware(apiVP8Config))
 	mux.HandleFunc("/api/clients", authMiddleware(apiListClients))
 	mux.HandleFunc("/api/clients/add", authMiddleware(apiAddClient))
 	mux.HandleFunc("/api/clients/delete", authMiddleware(apiDeleteClient))

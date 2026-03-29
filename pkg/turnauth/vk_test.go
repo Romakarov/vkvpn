@@ -215,6 +215,79 @@ func TestNewVKAPIErrorMissingFields(t *testing.T) {
 	}
 }
 
+func TestVKRequestRetryOnRateLimit(t *testing.T) {
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		attempts++
+		if attempts <= 2 {
+			// First 2 attempts: rate limit error
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"error": map[string]interface{}{
+					"error_code": float64(29),
+					"error_msg":  "Rate limit reached",
+				},
+			})
+			return
+		}
+		// 3rd attempt: success
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"data": map[string]interface{}{
+				"access_token": "success_token",
+			},
+		})
+	}))
+	defer server.Close()
+
+	orig := vkBaseURLs
+	vkBaseURLs.LoginVK = server.URL
+	vkBaseURLs.ApiVK = server.URL
+	vkBaseURLs.OkCDN = server.URL
+	defer func() { vkBaseURLs = orig }()
+
+	doRequest := newVKRequestFunc()
+	result, err := doRequest("test=1", server.URL+"/test")
+	if err != nil {
+		t.Fatalf("expected success after retry, got error: %v", err)
+	}
+	token, err := safeGetStr(result, "data", "access_token")
+	if err != nil {
+		t.Fatalf("expected access_token in result: %v", err)
+	}
+	if token != "success_token" {
+		t.Errorf("expected 'success_token', got %q", token)
+	}
+	if attempts != 3 {
+		t.Errorf("expected 3 attempts (2 rate-limited + 1 success), got %d", attempts)
+	}
+}
+
+func TestVKRequestMaxRetriesExceeded(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		// Always return rate limit
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"error": map[string]interface{}{
+				"error_code": float64(29),
+				"error_msg":  "Rate limit reached",
+			},
+		})
+	}))
+	defer server.Close()
+
+	doRequest := newVKRequestFunc()
+	// Should still return the response (with error inside), not a Go-level error
+	// because the last attempt returns the rate-limited response
+	result, err := doRequest("test=1", server.URL+"/test")
+	if err != nil {
+		t.Fatalf("expected response even on max retries, got error: %v", err)
+	}
+	// The result should contain the error
+	if _, ok := result["error"]; !ok {
+		t.Error("expected error field in response after max retries")
+	}
+}
+
 func TestVKAPIErrorNotWrapped(t *testing.T) {
 	// Plain error (not VKAPIError) should return false for all classifiers
 	err := fmt.Errorf("plain error")

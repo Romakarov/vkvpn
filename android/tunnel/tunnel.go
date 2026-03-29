@@ -8,6 +8,7 @@ package tunnel
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"crypto/tls"
 	"encoding/base64"
@@ -25,7 +26,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/gorilla/websocket"
 	"github.com/pion/dtls/v3"
 	"github.com/pion/dtls/v3/pkg/crypto/selfsign"
 	"github.com/pion/logging"
@@ -47,6 +47,21 @@ var (
 	wgDevice     *device.Device
 	wgCloseOnce  sync.Once
 )
+
+// clientSessionID is a 16-byte UUID generated once per tunnel start.
+// All DTLS connections send it so the server groups them into one WG session.
+var clientSessionID [16]byte
+
+func init() {
+	cryptoRand := make([]byte, 16)
+	if _, err := rand.Read(cryptoRand); err != nil {
+		// Fallback: use time-based seed (not cryptographically secure, but functional)
+		for i := range cryptoRand {
+			cryptoRand[i] = byte(time.Now().UnixNano() >> (i * 8))
+		}
+	}
+	copy(clientSessionID[:], cryptoRand)
+}
 
 // LogHandler is an interface for receiving log messages (gomobile-compatible)
 type LogHandler interface {
@@ -262,7 +277,8 @@ func (t *androidTUN) Close() error {
 // serverPubKey: WireGuard server public key (base64)
 // StartWithCreds starts the tunnel using pre-supplied TURN credentials from the server.
 // If turnUser is non-empty, the TURN credential extraction is bypassed.
-func StartWithCreds(tunFd int, peerAddr, vkLink, yandexLink string, connections int, wgPrivKey, serverPubKey, dtlsFingerprint, turnUser, turnPass, turnAddr string) error {
+// telemostLink is an optional Telemost conference link for VP8 fallback transport.
+func StartWithCreds(tunFd int, peerAddr, vkLink, yandexLink string, connections int, wgPrivKey, serverPubKey, dtlsFingerprint, turnUser, turnPass, turnAddr, telemostLink string) error {
 	// Store server-provided credentials for use in oneTurnConnection
 	if turnUser != "" {
 		serverTurnCreds.user = turnUser
@@ -273,8 +289,13 @@ func StartWithCreds(tunFd int, peerAddr, vkLink, yandexLink string, connections 
 		serverTurnCreds.pass = ""
 		serverTurnCreds.addr = ""
 	}
+	// Store Telemost link for VP8 fallback
+	vp8FallbackLink = telemostLink
 	return Start(tunFd, peerAddr, vkLink, yandexLink, connections, wgPrivKey, serverPubKey, dtlsFingerprint)
 }
+
+// vp8FallbackLink stores the Telemost conference link for VP8 transport fallback.
+var vp8FallbackLink string
 
 // serverTurnCreds holds pre-supplied TURN credentials from the VPN server
 var serverTurnCreds struct {
@@ -345,12 +366,7 @@ func Start(tunFd int, peerAddr, vkLink, yandexLink string, connections int, wgPr
 			connections = 16
 		}
 	} else {
-		parts := strings.Split(yandexLink, "j/")
-		link = parts[len(parts)-1]
-		getCreds = getYandexCreds
-		if connections <= 0 {
-			connections = 1
-		}
+		return fmt.Errorf("Yandex Telemost TURN is no longer available (blocked relay to external IPs, March 2026). Use VK link or server-provided credentials")
 	}
 	if idx := strings.IndexAny(link, "/?#"); idx != -1 {
 		link = link[:idx]
@@ -582,13 +598,62 @@ func (c *pipeConn) SetWriteDeadline(_ time.Time) error { return nil }
 
 // ─── TURN credential functions ───
 
-func getVkCreds(link string) (user, pass, addr string, err error) {
-	doRequest := func(data string, url string) (resp map[string]interface{}, err error) {
-		client := &http.Client{
-			Timeout:   20 * time.Second,
-			Transport: &http.Transport{MaxIdleConns: 100, MaxIdleConnsPerHost: 100, IdleConnTimeout: 90 * time.Second},
+// fallbackDNSServers for Android DNS resolution.
+var fallbackDNSServers = []string{
+	"77.88.8.8:53", // Yandex DNS — whitelisted by Russian ISPs
+	"77.88.8.1:53", // Yandex DNS secondary
+	"8.8.8.8:53",   // Google DNS
+	"1.1.1.1:53",   // Cloudflare DNS
+}
+
+func androidDNSDialer() *net.Dialer {
+	return &net.Dialer{
+		Timeout:   10 * time.Second,
+		KeepAlive: 30 * time.Second,
+		Resolver: &net.Resolver{
+			PreferGo: true,
+			Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
+				d := net.Dialer{Timeout: 3 * time.Second}
+				for _, dns := range fallbackDNSServers {
+					conn, err := d.DialContext(ctx, "udp", dns)
+					if err == nil {
+						return conn, nil
+					}
+				}
+				return d.DialContext(ctx, network, address)
+			},
+		},
+	}
+}
+
+// safeGetStr navigates nested JSON maps safely (no panics).
+func safeGetStr(m map[string]interface{}, keys ...string) (string, error) {
+	var current interface{} = m
+	for _, k := range keys {
+		cm, ok := current.(map[string]interface{})
+		if !ok {
+			return "", fmt.Errorf("expected map at key %q, got %T", k, current)
 		}
-		defer client.CloseIdleConnections()
+		current = cm[k]
+	}
+	s, ok := current.(string)
+	if !ok {
+		return "", fmt.Errorf("expected string, got %T: %v", current, current)
+	}
+	return s, nil
+}
+
+func getVkCreds(link string) (user, pass, addr string, err error) {
+	dialer := androidDNSDialer()
+	transport := &http.Transport{
+		DialContext:         dialer.DialContext,
+		MaxIdleConns:        100,
+		MaxIdleConnsPerHost: 100,
+		IdleConnTimeout:     90 * time.Second,
+	}
+
+	doRequest := func(data string, url string) (map[string]interface{}, error) {
+		client := &http.Client{Timeout: 30 * time.Second, Transport: transport}
 		req, err := http.NewRequest("POST", url, bytes.NewBuffer([]byte(data)))
 		if err != nil {
 			return nil, err
@@ -604,170 +669,107 @@ func getVkCreds(link string) (user, pass, addr string, err error) {
 		if err != nil {
 			return nil, err
 		}
+		var resp map[string]interface{}
 		if err := json.Unmarshal(body, &resp); err != nil {
 			return nil, fmt.Errorf("JSON decode: %s (body: %s)", err, string(body))
 		}
 		return resp, nil
 	}
 
-	var resp map[string]interface{}
-	defer func() {
-		if r := recover(); r != nil {
-			err = fmt.Errorf("VK creds parse error: %v (response: %v)", r, resp)
-		}
-	}()
+	getStr := safeGetStr
 
-	resp, err = doRequest("client_secret=QbYic1K3lEV5kTGiqlq2&client_id=6287487&scopes=audio_anonymous%2Cvideo_anonymous%2Cphotos_anonymous%2Cprofile_anonymous&isApiOauthAnonymEnabled=false&version=1&app_id=6287487",
+	// Step 1: Get anonymous token
+	resp, err := doRequest("client_secret=QbYic1K3lEV5kTGiqlq2&client_id=6287487&scopes=audio_anonymous%2Cvideo_anonymous%2Cphotos_anonymous%2Cprofile_anonymous&isApiOauthAnonymEnabled=false&version=1&app_id=6287487",
 		"https://login.vk.ru/?act=get_anonym_token")
 	if err != nil {
 		return "", "", "", err
 	}
-	token1 := resp["data"].(map[string]interface{})["access_token"].(string)
+	token1, err := getStr(resp, "data", "access_token")
+	if err != nil {
+		return "", "", "", fmt.Errorf("step 1 parse: %w", err)
+	}
 
+	// Step 2: Get anonymous access token payload
 	resp, err = doRequest(fmt.Sprintf("access_token=%s", token1),
-		"https://api.vk.ru/method/calls.getAnonymousAccessTokenPayload?v=5.264&client_id=6287487")
+		"https://api.vk.ru/method/calls.getAnonymousAccessTokenPayload?v=5.274&client_id=6287487")
 	if err != nil {
 		return "", "", "", err
 	}
-	token2 := resp["response"].(map[string]interface{})["payload"].(string)
+	token2, err := getStr(resp, "response", "payload")
+	if err != nil {
+		return "", "", "", fmt.Errorf("step 2 parse: %w", err)
+	}
 
+	// Step 3: Get messages token
 	resp, err = doRequest(fmt.Sprintf("client_id=6287487&token_type=messages&payload=%s&client_secret=QbYic1K3lEV5kTGiqlq2&version=1&app_id=6287487", token2),
 		"https://login.vk.ru/?act=get_anonym_token")
 	if err != nil {
 		return "", "", "", err
 	}
-	token3 := resp["data"].(map[string]interface{})["access_token"].(string)
+	token3, err := getStr(resp, "data", "access_token")
+	if err != nil {
+		return "", "", "", fmt.Errorf("step 3 parse: %w", err)
+	}
 
+	// Step 4: Get anonymous call token
 	resp, err = doRequest(fmt.Sprintf("vk_join_link=https://vk.com/call/join/%s&name=123&access_token=%s", link, token3),
-		"https://api.vk.ru/method/calls.getAnonymousToken?v=5.264")
+		"https://api.vk.ru/method/calls.getAnonymousToken?v=5.274")
 	if err != nil {
 		return "", "", "", err
 	}
-	token4 := resp["response"].(map[string]interface{})["token"].(string)
+	token4, err := getStr(resp, "response", "token")
+	if err != nil {
+		return "", "", "", fmt.Errorf("step 4 parse: %w", err)
+	}
 
-	resp, err = doRequest(fmt.Sprintf("%s%s%s", "session_data=%%7B%%22version%%22%%3A2%%2C%%22device_id%%22%%3A%%22", uuid.New(), "%%22%%2C%%22client_version%%22%%3A1.1%%2C%%22client_type%%22%%3A%%22SDK_JS%%22%%7D&method=auth.anonymLogin&format=JSON&application_key=CGMMEJLGDIHBABABA"),
+	// Step 5: OK.ru anonymous login
+	resp, err = doRequest(fmt.Sprintf("%s%s%s", "session_data=%7B%22version%22%3A2%2C%22device_id%22%3A%22", uuid.New(), "%22%2C%22client_version%22%3A1.1%2C%22client_type%22%3A%22SDK_JS%22%7D&method=auth.anonymLogin&format=JSON&application_key=CGMMEJLGDIHBABABA"),
 		"https://calls.okcdn.ru/fb.do")
 	if err != nil {
 		return "", "", "", err
 	}
-	token5 := resp["session_key"].(string)
+	token5, err := getStr(resp, "session_key")
+	if err != nil {
+		return "", "", "", fmt.Errorf("step 5 parse: %w", err)
+	}
 
+	// Step 6: Join conversation and get TURN credentials
 	resp, err = doRequest(fmt.Sprintf("joinLink=%s&isVideo=false&protocolVersion=5&anonymToken=%s&method=vchat.joinConversationByLink&format=JSON&application_key=CGMMEJLGDIHBABABA&session_key=%s", link, token4, token5),
 		"https://calls.okcdn.ru/fb.do")
 	if err != nil {
 		return "", "", "", err
 	}
 
-	user = resp["turn_server"].(map[string]interface{})["username"].(string)
-	pass = resp["turn_server"].(map[string]interface{})["credential"].(string)
-	turnURL := resp["turn_server"].(map[string]interface{})["urls"].([]interface{})[0].(string)
+	user, err = getStr(resp, "turn_server", "username")
+	if err != nil {
+		return "", "", "", fmt.Errorf("parse username: %w", err)
+	}
+	pass, err = getStr(resp, "turn_server", "credential")
+	if err != nil {
+		return "", "", "", fmt.Errorf("parse credential: %w", err)
+	}
+
+	turnServer, ok := resp["turn_server"].(map[string]interface{})
+	if !ok {
+		return "", "", "", fmt.Errorf("missing turn_server in response")
+	}
+	urls, ok := turnServer["urls"].([]interface{})
+	if !ok || len(urls) == 0 {
+		return "", "", "", fmt.Errorf("missing turn_server urls")
+	}
+	turnURL, ok := urls[0].(string)
+	if !ok {
+		return "", "", "", fmt.Errorf("invalid turn URL type")
+	}
 	clean := strings.Split(turnURL, "?")[0]
 	addr = strings.TrimPrefix(strings.TrimPrefix(clean, "turn:"), "turns:")
 	logMsg("VK creds OK: turn=%s", addr)
-	return
+	return user, pass, addr, nil
 }
 
+// getYandexCreds is deprecated — Yandex Telemost blocked TURN relay to external IPs.
 func getYandexCreds(link string) (string, string, string, error) {
-	const telemostConfHost = "cloud-api.yandex.ru"
-	telemostConfPath := fmt.Sprintf("/telemost_front/v2/telemost/conferences/https%%3A%%2F%%2Ftelemost.yandex.ru%%2Fj%%2F%s/connection?next_gen_media_platform_allowed=false", link)
-	const userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:144.0) Gecko/20100101 Firefox/144.0"
-
-	type ConfResp struct {
-		RoomID string `json:"room_id"`
-		PeerID string `json:"peer_id"`
-		CC     struct {
-			MSURL string `json:"media_server_url"`
-		} `json:"client_configuration"`
-		Credentials string `json:"credentials"`
-	}
-
-	client := &http.Client{Timeout: 20 * time.Second}
-	defer client.CloseIdleConnections()
-	req, err := http.NewRequest("GET", "https://"+telemostConfHost+telemostConfPath, nil)
-	if err != nil {
-		return "", "", "", err
-	}
-	req.Header.Set("User-Agent", userAgent)
-	req.Header.Set("Referer", "https://telemost.yandex.ru/")
-	req.Header.Set("Origin", "https://telemost.yandex.ru")
-	req.Header.Set("Client-Instance-Id", uuid.New().String())
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", "", "", err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != 200 {
-		body, _ := io.ReadAll(resp.Body)
-		return "", "", "", fmt.Errorf("status=%d body=%s", resp.StatusCode, body)
-	}
-
-	var cr ConfResp
-	if err := json.NewDecoder(resp.Body).Decode(&cr); err != nil {
-		return "", "", "", fmt.Errorf("decode conference response: %s", err)
-	}
-
-	h := http.Header{}
-	h.Set("Origin", "https://telemost.yandex.ru")
-	h.Set("User-Agent", userAgent)
-	wsCtx, wsCancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer wsCancel()
-	wsConn, _, err := (&websocket.Dialer{}).DialContext(wsCtx, cr.CC.MSURL, h)
-	if err != nil {
-		return "", "", "", err
-	}
-	defer wsConn.Close()
-
-	hello := map[string]interface{}{
-		"uid": uuid.New().String(),
-		"hello": map[string]interface{}{
-			"participantMeta":       map[string]interface{}{"name": "Guest", "role": "SPEAKER", "sendAudio": false, "sendVideo": false},
-			"participantAttributes": map[string]interface{}{"name": "Guest", "role": "SPEAKER"},
-			"sendAudio": false, "sendVideo": false, "sendSharing": false,
-			"participantId": cr.PeerID, "roomId": cr.RoomID,
-			"serviceName": "telemost", "credentials": cr.Credentials,
-			"sdkInfo":             map[string]interface{}{"implementation": "browser", "version": "5.15.0", "userAgent": userAgent, "hwConcurrency": 4},
-			"sdkInitializationId": uuid.New().String(),
-			"capabilitiesOffer": map[string]interface{}{
-				"offerAnswerMode": []string{"SEPARATE"}, "initialSubscriberOffer": []string{"ON_HELLO"},
-				"slotsMode": []string{"FROM_CONTROLLER"}, "simulcastMode": []string{"DISABLED"},
-			},
-		},
-	}
-	wsConn.WriteJSON(hello)
-	wsConn.SetReadDeadline(time.Now().Add(15 * time.Second))
-
-	type IceServer struct {
-		Urls       []string `json:"urls"`
-		Username   string   `json:"username"`
-		Credential string   `json:"credential"`
-	}
-	type SH struct {
-		ServerHello struct {
-			RtcConfig struct {
-				IceServers []IceServer `json:"iceServers"`
-			} `json:"rtcConfiguration"`
-		} `json:"serverHello"`
-	}
-
-	for i := 0; i < 20; i++ { // max 20 messages before giving up
-		_, msg, err := wsConn.ReadMessage()
-		if err != nil {
-			return "", "", "", fmt.Errorf("yandex ws read: %s", err)
-		}
-		var sh SH
-		json.Unmarshal(msg, &sh)
-		for _, s := range sh.ServerHello.RtcConfig.IceServers {
-			for _, u := range s.Urls {
-				if strings.HasPrefix(u, "turn:") && !strings.Contains(u, "transport=tcp") {
-					clean := strings.Split(u, "?")[0]
-					addr := strings.TrimPrefix(clean, "turn:")
-					return s.Username, s.Credential, addr, nil
-				}
-			}
-		}
-	}
-	return "", "", "", fmt.Errorf("yandex: no TURN server found after 20 messages")
+	return "", "", "", fmt.Errorf("Yandex Telemost TURN is no longer available (blocked relay to external IPs)")
 }
 
 // ─── DTLS + TURN functions ───
@@ -851,6 +853,17 @@ func oneDtlsConnection(ctx context.Context, peer *net.UDPAddr, listenConn net.Pa
 	}
 	defer dtlsConn.Close()
 	logMsg("[DTLS] Connected to %s! Handshake OK", peer)
+
+	// Send session handshake: magic byte 0x00 + 16-byte Session UUID
+	handshake := make([]byte, 1+len(clientSessionID))
+	handshake[0] = 0x00
+	copy(handshake[1:], clientSessionID[:])
+	if _, err1 = dtlsConn.Write(handshake); err1 != nil {
+		err = fmt.Errorf("failed to send session handshake: %s", err1)
+		return
+	}
+	logMsg("[DTLS] Session ID sent: %x", clientSessionID[:4])
+
 	if okchan != nil {
 		go func() {
 			for {

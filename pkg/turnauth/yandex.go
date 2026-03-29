@@ -16,9 +16,21 @@ import (
 // yandexConfBaseURL is the base URL for the Yandex conference API. Overridable for testing.
 var yandexConfBaseURL = "https://cloud-api.yandex.ru"
 
+// ErrYandexDeprecated is returned when attempting to use Yandex Telemost TURN.
+var ErrYandexDeprecated = fmt.Errorf("Yandex Telemost TURN is no longer available: Telemost blocked relay to external IPs (March 2026)")
+
 // GetYandexCredentials extracts TURN credentials from a Yandex Telemost link.
-// The link should be the conference ID or full URL.
+//
+// Deprecated: Yandex Telemost blocked TURN relay to external IPs in March 2026.
+// This function is kept for reference but returns ErrYandexDeprecated.
+// Use GetVKCredentials or GetVKCredentialsWithToken instead.
 func GetYandexCredentials(link string) (*Credentials, error) {
+	return nil, ErrYandexDeprecated
+}
+
+// getYandexCredentialsImpl is the original implementation, kept for reference.
+// nolint: unused
+func getYandexCredentialsImpl(link string) (*Credentials, error) {
 	// Extract just the conference ID if full URL provided
 	if strings.Contains(link, "j/") {
 		parts := strings.Split(link, "j/")
@@ -181,9 +193,17 @@ func (s *YandexSession) Close() error {
 }
 
 // GetYandexCredentialsWithKeepalive extracts TURN credentials and keeps the
-// WebSocket session alive with periodic pings. The returned Session must be
-// closed when no longer needed.
+// WebSocket session alive with periodic pings.
+//
+// Deprecated: Yandex Telemost blocked TURN relay to external IPs in March 2026.
+// Returns ErrYandexDeprecated.
 func GetYandexCredentialsWithKeepalive(link string) (*YandexSession, error) {
+	return nil, ErrYandexDeprecated
+}
+
+// getYandexCredentialsWithKeepaliveImpl is the original implementation, kept for reference.
+// nolint: unused
+func getYandexCredentialsWithKeepaliveImpl(link string) (*YandexSession, error) {
 	if strings.Contains(link, "j/") {
 		parts := strings.Split(link, "j/")
 		link = parts[len(parts)-1]
