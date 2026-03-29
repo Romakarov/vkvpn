@@ -1,11 +1,64 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <style name="AppTheme" parent="Theme.AppCompat.NoActionBar">
-        <item name="colorPrimary">#e94560</item>
-        <item name="colorPrimaryDark">#1a1a2e</item>
-        <item name="colorAccent">#e94560</item>
-        <item name="android:windowBackground">#1a1a2e</item>
-        <item name="android:statusBarColor">#0f0f23</item>
-        <item name="android:navigationBarColor">#0f0f23</item>
+        <item name="colorPrimary">@color/cp_cyan</item>
+        <item name="colorPrimaryDark">@color/cp_background</item>
+        <item name="colorAccent">@color/cp_cyan</item>
+        <item name="android:windowBackground">@color/cp_background</item>
+        <item name="android:statusBarColor">@color/cp_background</item>
+        <item name="android:navigationBarColor">@color/cp_background</item>
+        <item name="android:textColorPrimary">@color/cp_text_primary</item>
+        <item name="android:textColorSecondary">@color/cp_text_secondary</item>
+        <item name="android:fontFamily">sans-serif-medium</item>
+    </style>
+
+    <!-- Cyberpunk card style -->
+    <style name="CyberpunkCard">
+        <item name="android:background">@drawable/card_bg</item>
+        <item name="android:padding">16dp</item>
+    </style>
+
+    <!-- Cyberpunk primary button -->
+    <style name="CyberpunkButton">
+        <item name="android:background">@drawable/btn_connect_bg</item>
+        <item name="android:textColor">@color/cp_cyan</item>
+        <item name="android:textSize">14sp</item>
+        <item name="android:textStyle">bold</item>
+        <item name="android:textAllCaps">true</item>
+        <item name="android:fontFamily">sans-serif-medium</item>
+        <item name="android:letterSpacing">0.1</item>
+        <item name="android:paddingLeft">24dp</item>
+        <item name="android:paddingRight">24dp</item>
+    </style>
+
+    <!-- Cyberpunk terminal button -->
+    <style name="CyberpunkButtonTerminal">
+        <item name="android:background">@drawable/btn_terminal</item>
+        <item name="android:textColor">@color/cp_green</item>
+        <item name="android:textSize">11sp</item>
+        <item name="android:textStyle">bold</item>
+        <item name="android:textAllCaps">true</item>
+        <item name="android:fontFamily">monospace</item>
+        <item name="android:letterSpacing">0.05</item>
+        <item name="android:paddingLeft">16dp</item>
+        <item name="android:paddingRight">16dp</item>
+    </style>
+
+    <!-- Stat label text -->
+    <style name="StatLabel">
+        <item name="android:textColor">@color/cp_text_tertiary</item>
+        <item name="android:textSize">10sp</item>
+        <item name="android:textStyle">bold</item>
+        <item name="android:textAllCaps">true</item>
+        <item name="android:fontFamily">sans-serif-medium</item>
+        <item name="android:letterSpacing">0.15</item>
+    </style>
+
+    <!-- Stat value text -->
+    <style name="StatValue">
+        <item name="android:textColor">@color/cp_cyan</item>
+        <item name="android:textSize">18sp</item>
+        <item name="android:textStyle">bold</item>
+        <item name="android:fontFamily">sans-serif-medium</item>
     </style>
 </resources>

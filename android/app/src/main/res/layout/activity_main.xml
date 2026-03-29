@@ -2,142 +2,364 @@
 <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="#1a1a2e">
+    android:background="@color/cp_background">
 
-    <!-- Main screen (shown when config exists) -->
-    <LinearLayout
+    <!-- ============================================================ -->
+    <!-- MAIN SCREEN (shown when config exists)                       -->
+    <!-- ============================================================ -->
+    <ScrollView
         android:id="@+id/main_screen"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
-        android:gravity="center"
-        android:orientation="vertical"
-        android:padding="32dp"
+        android:fillViewport="true"
         android:visibility="gone">
 
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginBottom="8dp"
-            android:text="VKVPN"
-            android:textColor="#e94560"
-            android:textSize="32sp"
-            android:textStyle="bold" />
-
-        <TextView
-            android:id="@+id/tv_status"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginBottom="48dp"
-            android:text="Disconnected"
-            android:textColor="#FF6B6B"
-            android:textSize="18sp" />
-
-        <Button
-            android:id="@+id/btn_connect"
-            android:layout_width="200dp"
-            android:layout_height="200dp"
-            android:background="@drawable/btn_circle"
-            android:text="Connect"
-            android:textColor="#ffffff"
-            android:textSize="22sp"
-            android:textStyle="bold" />
-
-        <TextView
-            android:id="@+id/tv_client_name"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="32dp"
-            android:textColor="#555577"
-            android:textSize="14sp" />
-
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="16dp"
-            android:gravity="center"
-            android:orientation="horizontal">
+            android:gravity="center_horizontal"
+            android:orientation="vertical"
+            android:paddingStart="24dp"
+            android:paddingEnd="24dp"
+            android:paddingTop="48dp"
+            android:paddingBottom="32dp">
 
-            <Button
-                android:id="@+id/btn_reset"
+            <!-- ── Glitch Title ── -->
+            <FrameLayout
                 android:layout_width="wrap_content"
-                android:layout_height="40dp"
-                android:background="@android:color/transparent"
-                android:text="Reset"
-                android:textColor="#555577"
-                android:textSize="13sp" />
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="4dp">
 
-            <Button
-                android:id="@+id/btn_logs"
-                android:layout_width="wrap_content"
-                android:layout_height="40dp"
-                android:layout_marginStart="16dp"
-                android:background="@android:color/transparent"
-                android:text="📋 Logs"
-                android:textColor="#8888aa"
-                android:textSize="13sp" />
-        </LinearLayout>
+                <!-- Magenta ghost (offset left) -->
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="@string/title_vkvpn"
+                    android:textColor="#33FF51FA"
+                    android:textSize="36sp"
+                    android:textStyle="bold"
+                    android:fontFamily="sans-serif-medium"
+                    android:letterSpacing="0.15"
+                    android:translationX="-2dp"
+                    android:translationY="1dp" />
 
-        <!-- Log viewer (hidden by default) -->
-        <ScrollView
-            android:id="@+id/log_viewer"
-            android:layout_width="match_parent"
-            android:layout_height="200dp"
-            android:layout_marginTop="8dp"
-            android:background="@drawable/input_bg"
-            android:visibility="gone">
+                <!-- Cyan ghost (offset right) -->
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="@string/title_vkvpn"
+                    android:textColor="#3396F8FF"
+                    android:textSize="36sp"
+                    android:textStyle="bold"
+                    android:fontFamily="sans-serif-medium"
+                    android:letterSpacing="0.15"
+                    android:translationX="2dp"
+                    android:translationY="-1dp" />
 
+                <!-- Main title -->
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="@string/title_vkvpn"
+                    android:textColor="@color/cp_text_primary"
+                    android:textSize="36sp"
+                    android:textStyle="bold"
+                    android:fontFamily="sans-serif-medium"
+                    android:letterSpacing="0.15" />
+            </FrameLayout>
+
+            <!-- Subtitle line -->
             <TextView
-                android:id="@+id/tv_logs"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="32dp"
+                android:text="@string/subtitle_secure"
+                android:textColor="@color/cp_text_tertiary"
+                android:textSize="11sp"
+                android:fontFamily="monospace"
+                android:letterSpacing="0.1" />
+
+            <!-- Scan line decoration -->
+            <View
+                android:layout_width="match_parent"
+                android:layout_height="1dp"
+                android:layout_marginBottom="32dp"
+                android:background="@drawable/scan_line" />
+
+            <!-- ── Status Text ── -->
+            <TextView
+                android:id="@+id/tv_status"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="24dp"
+                android:text="@string/status_disconnected"
+                android:textColor="@color/cp_red"
+                android:textSize="14sp"
+                android:textStyle="bold"
+                android:fontFamily="sans-serif-medium"
+                android:letterSpacing="0.2" />
+
+            <!-- ── Hexagonal Power Button ── -->
+            <FrameLayout
+                android:layout_width="180dp"
+                android:layout_height="180dp"
+                android:layout_marginBottom="24dp"
+                android:layout_gravity="center">
+
+                <Button
+                    android:id="@+id/btn_connect"
+                    android:layout_width="180dp"
+                    android:layout_height="180dp"
+                    android:background="@drawable/btn_circle"
+                    android:text=""
+                    android:textColor="@color/cp_cyan"
+                    android:stateListAnimator="@null" />
+
+                <!-- Power icon overlay -->
+                <ImageView
+                    android:layout_width="48dp"
+                    android:layout_height="48dp"
+                    android:layout_gravity="center"
+                    android:src="@drawable/ic_power"
+                    android:clickable="false"
+                    android:importantForAccessibility="no" />
+            </FrameLayout>
+
+            <!-- Client name -->
+            <TextView
+                android:id="@+id/tv_client_name"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="24dp"
+                android:textColor="@color/cp_text_tertiary"
+                android:textSize="12sp"
+                android:fontFamily="monospace"
+                android:letterSpacing="0.05" />
+
+            <!-- ── Stats Row ── -->
+            <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:fontFamily="monospace"
-                android:padding="8dp"
-                android:textColor="#aaaacc"
-                android:textSize="11sp" />
-        </ScrollView>
+                android:layout_marginBottom="24dp"
+                android:orientation="horizontal"
+                android:gravity="center">
 
-        <LinearLayout
-            android:id="@+id/log_buttons"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="4dp"
-            android:gravity="center"
-            android:orientation="horizontal"
-            android:visibility="gone">
+                <!-- Ping card -->
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:layout_marginEnd="6dp"
+                    android:background="@drawable/card_bg"
+                    android:gravity="center"
+                    android:orientation="vertical"
+                    android:padding="12dp">
 
-            <Button
-                android:id="@+id/btn_copy_logs"
-                android:layout_width="wrap_content"
-                android:layout_height="36dp"
-                android:background="@android:color/transparent"
-                android:text="Copy"
-                android:textColor="#8888aa"
-                android:textSize="12sp" />
+                    <TextView
+                        style="@style/StatLabel"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="@string/stat_ping" />
 
-            <Button
-                android:id="@+id/btn_save_logs"
-                android:layout_width="wrap_content"
-                android:layout_height="36dp"
-                android:layout_marginStart="16dp"
-                android:background="@android:color/transparent"
-                android:text="Save to file"
-                android:textColor="#8888aa"
-                android:textSize="12sp" />
+                    <TextView
+                        android:id="@+id/tv_stat_ping"
+                        style="@style/StatValue"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="4dp"
+                        android:text="@string/stat_empty" />
+                </LinearLayout>
 
-            <Button
-                android:id="@+id/btn_refresh_logs"
-                android:layout_width="wrap_content"
-                android:layout_height="36dp"
-                android:layout_marginStart="16dp"
-                android:background="@android:color/transparent"
-                android:text="Refresh"
-                android:textColor="#8888aa"
-                android:textSize="12sp" />
+                <!-- Upload card -->
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:layout_marginStart="3dp"
+                    android:layout_marginEnd="3dp"
+                    android:background="@drawable/card_bg"
+                    android:gravity="center"
+                    android:orientation="vertical"
+                    android:padding="12dp">
+
+                    <TextView
+                        style="@style/StatLabel"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="@string/stat_upload" />
+
+                    <TextView
+                        android:id="@+id/tv_stat_upload"
+                        style="@style/StatValue"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="4dp"
+                        android:text="@string/stat_empty" />
+                </LinearLayout>
+
+                <!-- Download card -->
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:layout_marginStart="6dp"
+                    android:background="@drawable/card_bg"
+                    android:gravity="center"
+                    android:orientation="vertical"
+                    android:padding="12dp">
+
+                    <TextView
+                        style="@style/StatLabel"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="@string/stat_download" />
+
+                    <TextView
+                        android:id="@+id/tv_stat_download"
+                        style="@style/StatValue"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="4dp"
+                        android:text="@string/stat_empty" />
+                </LinearLayout>
+            </LinearLayout>
+
+            <!-- Scan line decoration -->
+            <View
+                android:layout_width="match_parent"
+                android:layout_height="1dp"
+                android:layout_marginBottom="16dp"
+                android:background="@drawable/scan_line" />
+
+            <!-- ── Bottom Buttons Row ── -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="8dp"
+                android:gravity="center"
+                android:orientation="horizontal">
+
+                <Button
+                    android:id="@+id/btn_reset"
+                    android:layout_width="0dp"
+                    android:layout_height="42dp"
+                    android:layout_weight="1"
+                    android:layout_marginEnd="8dp"
+                    android:background="@drawable/btn_reset_bg"
+                    android:text="@string/btn_reset"
+                    android:textColor="@color/cp_red"
+                    android:textSize="11sp"
+                    android:textStyle="bold"
+                    android:textAllCaps="true"
+                    android:fontFamily="sans-serif-medium"
+                    android:letterSpacing="0.05"
+                    android:stateListAnimator="@null" />
+
+                <Button
+                    android:id="@+id/btn_logs"
+                    android:layout_width="0dp"
+                    android:layout_height="42dp"
+                    android:layout_weight="1"
+                    android:layout_marginStart="8dp"
+                    android:background="@drawable/btn_terminal"
+                    android:text="@string/btn_logs"
+                    android:textColor="@color/cp_green"
+                    android:textSize="11sp"
+                    android:textStyle="bold"
+                    android:textAllCaps="true"
+                    android:fontFamily="sans-serif-medium"
+                    android:letterSpacing="0.05"
+                    android:stateListAnimator="@null" />
+            </LinearLayout>
+
+            <!-- ── Log Viewer (hidden by default) ── -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:orientation="vertical">
+
+                <!-- Log header -->
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:background="#1A8EFF71"
+                    android:padding="8dp"
+                    android:text="@string/log_header"
+                    android:textColor="@color/cp_green"
+                    android:textSize="10sp"
+                    android:fontFamily="monospace"
+                    android:letterSpacing="0.05"
+                    android:visibility="gone"
+                    android:id="@+id/log_header_text" />
+
+                <ScrollView
+                    android:id="@+id/log_viewer"
+                    android:layout_width="match_parent"
+                    android:layout_height="220dp"
+                    android:background="@drawable/log_viewer_bg"
+                    android:visibility="gone">
+
+                    <TextView
+                        android:id="@+id/tv_logs"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:fontFamily="monospace"
+                        android:padding="12dp"
+                        android:textColor="@color/cp_green"
+                        android:textSize="10sp"
+                        android:lineSpacingExtra="2dp"
+                        android:letterSpacing="0.02" />
+                </ScrollView>
+
+                <LinearLayout
+                    android:id="@+id/log_buttons"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="6dp"
+                    android:gravity="center"
+                    android:orientation="horizontal"
+                    android:visibility="gone">
+
+                    <Button
+                        android:id="@+id/btn_copy_logs"
+                        style="@style/CyberpunkButtonTerminal"
+                        android:layout_width="0dp"
+                        android:layout_height="36dp"
+                        android:layout_weight="1"
+                        android:layout_marginEnd="4dp"
+                        android:text="@string/btn_copy_logs"
+                        android:stateListAnimator="@null" />
+
+                    <Button
+                        android:id="@+id/btn_save_logs"
+                        style="@style/CyberpunkButtonTerminal"
+                        android:layout_width="0dp"
+                        android:layout_height="36dp"
+                        android:layout_weight="1"
+                        android:layout_marginStart="4dp"
+                        android:layout_marginEnd="4dp"
+                        android:text="@string/btn_save_logs"
+                        android:stateListAnimator="@null" />
+
+                    <Button
+                        android:id="@+id/btn_refresh_logs"
+                        style="@style/CyberpunkButtonTerminal"
+                        android:layout_width="0dp"
+                        android:layout_height="36dp"
+                        android:layout_weight="1"
+                        android:layout_marginStart="4dp"
+                        android:text="@string/btn_refresh_logs"
+                        android:stateListAnimator="@null" />
+                </LinearLayout>
+            </LinearLayout>
+
         </LinearLayout>
+    </ScrollView>
 
-    </LinearLayout>
-
-    <!-- Setup screen (shown when no config) -->
+    <!-- ============================================================ -->
+    <!-- SETUP SCREEN (shown when no config)                          -->
+    <!-- ============================================================ -->
     <ScrollView
         android:id="@+id/setup_screen"
         android:layout_width="match_parent"
@@ -149,77 +371,186 @@
             android:layout_height="wrap_content"
             android:gravity="center_horizontal"
             android:orientation="vertical"
-            android:padding="32dp">
+            android:paddingStart="24dp"
+            android:paddingEnd="24dp"
+            android:paddingTop="64dp"
+            android:paddingBottom="32dp">
 
+            <!-- ── Glitch Title ── -->
+            <FrameLayout
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="4dp">
+
+                <!-- Magenta ghost -->
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="@string/setup_title"
+                    android:textColor="#33FF51FA"
+                    android:textSize="40sp"
+                    android:textStyle="bold"
+                    android:fontFamily="sans-serif-medium"
+                    android:letterSpacing="0.15"
+                    android:translationX="-2dp"
+                    android:translationY="1dp" />
+
+                <!-- Cyan ghost -->
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="@string/setup_title"
+                    android:textColor="#3396F8FF"
+                    android:textSize="40sp"
+                    android:textStyle="bold"
+                    android:fontFamily="sans-serif-medium"
+                    android:letterSpacing="0.15"
+                    android:translationX="2dp"
+                    android:translationY="-1dp" />
+
+                <!-- Main -->
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="@string/setup_title"
+                    android:textColor="@color/cp_text_primary"
+                    android:textSize="40sp"
+                    android:textStyle="bold"
+                    android:fontFamily="sans-serif-medium"
+                    android:letterSpacing="0.15" />
+            </FrameLayout>
+
+            <!-- Setup subtitle -->
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="48dp"
-                android:layout_marginBottom="8dp"
-                android:text="VKVPN"
-                android:textColor="#e94560"
-                android:textSize="32sp"
-                android:textStyle="bold" />
-
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginBottom="32dp"
-                android:text="Setup"
-                android:textColor="#8888aa"
-                android:textSize="15sp" />
-
-            <Button
-                android:id="@+id/btn_scan_qr"
-                android:layout_width="match_parent"
-                android:layout_height="56dp"
-                android:background="@drawable/btn_connect_bg"
-                android:text="📷  Scan QR Code"
-                android:textColor="#ffffff"
-                android:textSize="18sp"
-                android:textStyle="bold" />
-
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="24dp"
-                android:layout_marginBottom="16dp"
-                android:text="or paste config manually"
-                android:textColor="#555577"
-                android:textSize="13sp" />
-
-            <EditText
-                android:id="@+id/et_config"
-                android:layout_width="match_parent"
-                android:layout_height="120dp"
-                android:background="@drawable/input_bg"
+                android:layout_marginBottom="40dp"
+                android:text="@string/setup_subtitle"
+                android:textColor="@color/cp_cyan"
+                android:textSize="12sp"
                 android:fontFamily="monospace"
-                android:gravity="top|start"
-                android:hint="{&quot;server&quot;:&quot;...&quot;, ...}"
-                android:inputType="textMultiLine"
-                android:padding="16dp"
-                android:textColor="#ffffff"
-                android:textColorHint="#555577"
-                android:textSize="13sp" />
+                android:letterSpacing="0.2" />
 
-            <Button
-                android:id="@+id/btn_import"
+            <!-- Scan line -->
+            <View
                 android:layout_width="match_parent"
-                android:layout_height="48dp"
-                android:layout_marginTop="12dp"
-                android:background="@drawable/btn_connect_bg"
-                android:text="Import Config"
-                android:textColor="#ffffff"
-                android:textSize="16sp"
-                android:textStyle="bold" />
+                android:layout_height="1dp"
+                android:layout_marginBottom="32dp"
+                android:background="@drawable/scan_line" />
 
+            <!-- QR Scan section card -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:background="@drawable/card_bg"
+                android:orientation="vertical"
+                android:padding="20dp"
+                android:layout_marginBottom="16dp">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginBottom="16dp"
+                    android:text="// QUICK_IMPORT"
+                    android:textColor="@color/cp_text_tertiary"
+                    android:textSize="10sp"
+                    android:fontFamily="monospace"
+                    android:letterSpacing="0.1" />
+
+                <Button
+                    android:id="@+id/btn_scan_qr"
+                    android:layout_width="match_parent"
+                    android:layout_height="54dp"
+                    android:background="@drawable/btn_connect_bg"
+                    android:drawableStart="@drawable/ic_qr_scan"
+                    android:drawablePadding="12dp"
+                    android:text="@string/setup_scan_qr"
+                    android:textColor="@color/cp_cyan"
+                    android:textSize="15sp"
+                    android:textStyle="bold"
+                    android:fontFamily="sans-serif-medium"
+                    android:letterSpacing="0.1"
+                    android:gravity="center"
+                    android:stateListAnimator="@null" />
+            </LinearLayout>
+
+            <!-- Separator -->
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="24dp"
-                android:text="Get config QR from your admin"
-                android:textColor="#555577"
-                android:textSize="13sp" />
+                android:layout_marginTop="8dp"
+                android:layout_marginBottom="16dp"
+                android:text="@string/setup_or"
+                android:textColor="@color/cp_text_tertiary"
+                android:textSize="11sp"
+                android:fontFamily="monospace"
+                android:letterSpacing="0.05" />
+
+            <!-- Manual config card -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:background="@drawable/card_bg"
+                android:orientation="vertical"
+                android:padding="20dp"
+                android:layout_marginBottom="16dp">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginBottom="12dp"
+                    android:text="// MANUAL_CONFIG"
+                    android:textColor="@color/cp_text_tertiary"
+                    android:textSize="10sp"
+                    android:fontFamily="monospace"
+                    android:letterSpacing="0.1" />
+
+                <EditText
+                    android:id="@+id/et_config"
+                    android:layout_width="match_parent"
+                    android:layout_height="120dp"
+                    android:background="@drawable/input_bg"
+                    android:fontFamily="monospace"
+                    android:gravity="top|start"
+                    android:hint="@string/setup_hint"
+                    android:inputType="textMultiLine"
+                    android:padding="14dp"
+                    android:textColor="@color/cp_cyan"
+                    android:textColorHint="@color/cp_text_tertiary"
+                    android:textSize="12sp" />
+
+                <Button
+                    android:id="@+id/btn_import"
+                    android:layout_width="match_parent"
+                    android:layout_height="48dp"
+                    android:layout_marginTop="12dp"
+                    android:background="@drawable/btn_magenta_bg"
+                    android:text="@string/setup_import"
+                    android:textColor="@color/cp_magenta"
+                    android:textSize="14sp"
+                    android:textStyle="bold"
+                    android:fontFamily="sans-serif-medium"
+                    android:letterSpacing="0.1"
+                    android:stateListAnimator="@null" />
+            </LinearLayout>
+
+            <!-- Scan line -->
+            <View
+                android:layout_width="match_parent"
+                android:layout_height="1dp"
+                android:layout_marginTop="16dp"
+                android:layout_marginBottom="16dp"
+                android:background="@drawable/scan_line" />
+
+            <!-- Footer -->
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/setup_footer"
+                android:textColor="@color/cp_text_tertiary"
+                android:textSize="10sp"
+                android:fontFamily="monospace"
+                android:letterSpacing="0.05" />
 
         </LinearLayout>
     </ScrollView>

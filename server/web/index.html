@@ -3,111 +3,194 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>VKVPN Admin</title>
+<title>VKVPN // CYBERDECK</title>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
 :root {
-  --bg: #0f0f13;
-  --card: #1a1a24;
-  --border: #2a2a3a;
-  --accent: #6c5ce7;
-  --accent2: #a29bfe;
-  --green: #00b894;
-  --red: #ff6b6b;
+  --bg: #0e0e0e;
+  --card: #1a1919;
+  --border: rgba(150,248,255,0.2);
+  --accent: #96f8ff;
+  --magenta: #ff51fa;
+  --green: #8eff71;
+  --red: #d7383b;
   --yellow: #feca57;
   --text: #e0e0e0;
-  --text2: #8888a0;
-  --radius: 12px;
+  --text2: #6a6a7a;
+  --input-bg: #201f1f;
 }
 * { margin:0; padding:0; box-sizing:border-box; }
 body {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  font-family: 'Space Grotesk', sans-serif;
   background: var(--bg);
   color: var(--text);
   min-height: 100vh;
+  position: relative;
 }
-.container { max-width: 900px; margin: 0 auto; padding: 20px; }
+body::before {
+  content: '';
+  position: fixed;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background: radial-gradient(circle at 2px 2px, rgba(150,248,255,0.05) 1px, transparent 0);
+  background-size: 24px 24px;
+  pointer-events: none;
+  z-index: 0;
+}
+body::after {
+  content: '';
+  position: fixed;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background: linear-gradient(to bottom, transparent 50%, rgba(150,248,255,0.02) 50%);
+  background-size: 100% 4px;
+  pointer-events: none;
+  z-index: 1;
+}
+.container { max-width: 960px; margin: 0 auto; padding: 24px; position: relative; z-index: 2; }
+
+/* Title */
 h1 {
-  font-size: 28px;
+  font-size: 32px;
   font-weight: 700;
-  margin-bottom: 24px;
+  margin-bottom: 28px;
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 14px;
+  text-transform: uppercase;
+  letter-spacing: 3px;
+  color: var(--accent);
+  text-shadow: 2px 0 var(--magenta), -2px 0 var(--accent);
+  animation: glitch 3s infinite;
+}
+@keyframes glitch {
+  0%, 92%, 100% { text-shadow: 2px 0 var(--magenta), -2px 0 var(--accent); }
+  93% { text-shadow: -3px 0 var(--magenta), 3px 0 var(--accent); }
+  94% { text-shadow: 2px 2px var(--magenta), -2px -1px var(--accent); }
+  95% { text-shadow: -1px 0 var(--magenta), 1px 0 var(--accent); }
+  96% { text-shadow: 3px -1px var(--magenta), -3px 1px var(--green); }
+  97% { text-shadow: 2px 0 var(--magenta), -2px 0 var(--accent); }
 }
 h1 .logo {
-  width: 36px; height: 36px;
-  background: linear-gradient(135deg, var(--accent), var(--accent2));
-  border-radius: 10px;
+  width: 40px; height: 40px;
+  background: linear-gradient(135deg, var(--accent), var(--magenta));
   display: flex; align-items: center; justify-content: center;
-  font-size: 18px;
+  font-size: 20px;
+  color: var(--bg);
+  font-weight: 700;
+  clip-path: polygon(10% 0, 100% 0, 100% 70%, 90% 100%, 0 100%, 0 30%);
 }
+
+/* Cards grid */
 .cards { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 24px; }
 @media(max-width:600px) { .cards { grid-template-columns: 1fr; } }
 .card {
-  background: var(--card);
+  background: rgba(26,25,25,0.6);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
   border: 1px solid var(--border);
-  border-radius: var(--radius);
   padding: 20px;
+  position: relative;
+  overflow: hidden;
+}
+.card::before {
+  content: '';
+  position: absolute;
+  top: 0; left: 0;
+  width: 2px; height: 100%;
+  background: var(--accent);
+  opacity: 0.6;
 }
 .card h2 {
-  font-size: 14px;
+  font-size: 11px;
   text-transform: uppercase;
-  letter-spacing: 1px;
-  color: var(--text2);
+  letter-spacing: 2px;
+  color: var(--accent);
   margin-bottom: 16px;
-}
-.card.full { grid-column: 1 / -1; }
-.stat { font-size: 32px; font-weight: 700; }
-.stat small { font-size: 14px; color: var(--text2); font-weight: 400; }
-.badge {
-  display: inline-block;
-  padding: 4px 12px;
-  border-radius: 20px;
-  font-size: 12px;
   font-weight: 600;
 }
-.badge.on { background: rgba(0,184,148,0.15); color: var(--green); }
-.badge.off { background: rgba(255,107,107,0.15); color: var(--red); }
+.card.full { grid-column: 1 / -1; }
+.stat { font-size: 32px; font-weight: 700; color: var(--text); }
+.stat small { font-size: 14px; color: var(--text2); font-weight: 400; text-transform: uppercase; letter-spacing: 1px; }
+
+/* Badges */
+.badge {
+  display: inline-block;
+  padding: 3px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.badge.on {
+  background: rgba(142,255,113,0.12);
+  color: var(--green);
+  border: 1px solid rgba(142,255,113,0.3);
+}
+.badge.off {
+  background: rgba(215,56,59,0.12);
+  color: var(--red);
+  border: 1px solid rgba(215,56,59,0.3);
+}
+
+/* LED indicators */
+.led {
+  display: inline-block;
+  width: 4px; height: 4px;
+}
+.led.green { background: var(--green); box-shadow: 0 0 6px var(--green); }
+.led.red { background: var(--red); box-shadow: 0 0 6px var(--red); }
+.led.cyan { background: var(--accent); box-shadow: 0 0 6px var(--accent); }
+.led.off { background: var(--text2); }
 
 /* Forms */
 .form-group { margin-bottom: 12px; }
 .form-group label {
   display: block;
-  font-size: 13px;
+  font-size: 11px;
   color: var(--text2);
   margin-bottom: 6px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
 }
 input, select {
   width: 100%;
   padding: 10px 14px;
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 8px;
+  background: var(--input-bg);
+  border: 1px solid transparent;
+  border-left: 2px solid var(--accent);
   color: var(--text);
   font-size: 14px;
+  font-family: 'Space Grotesk', sans-serif;
   outline: none;
   transition: border-color 0.2s;
 }
-input:focus, select:focus { border-color: var(--accent); }
+input:focus, select:focus { border: 1px solid var(--accent); border-left: 2px solid var(--accent); }
+input::placeholder { color: var(--text2); }
+
+/* Buttons */
 .btn {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 10px 20px;
+  padding: 10px 22px;
   border: none;
-  border-radius: 8px;
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 600;
+  font-family: 'Space Grotesk', sans-serif;
   cursor: pointer;
-  transition: all 0.2s;
+  transition: all 0.15s;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  clip-path: polygon(10% 0, 100% 0, 100% 70%, 90% 100%, 0 100%, 0 30%);
 }
-.btn-primary { background: var(--accent); color: white; }
-.btn-primary:hover { background: var(--accent2); }
-.btn-danger { background: rgba(255,107,107,0.15); color: var(--red); }
-.btn-danger:hover { background: rgba(255,107,107,0.25); }
-.btn-sm { padding: 6px 12px; font-size: 12px; }
-.btn-success { background: rgba(0,184,148,0.15); color: var(--green); }
-.btn-success:hover { background: rgba(0,184,148,0.25); }
+.btn-primary { background: var(--accent); color: var(--bg); }
+.btn-primary:hover { background: #b8faff; box-shadow: 0 0 20px rgba(150,248,255,0.3); }
+.btn-danger { background: rgba(215,56,59,0.15); color: var(--red); border: 1px solid rgba(215,56,59,0.3); }
+.btn-danger:hover { background: rgba(215,56,59,0.25); }
+.btn-sm { padding: 6px 14px; font-size: 11px; }
+.btn-success { background: rgba(142,255,113,0.15); color: var(--green); border: 1px solid rgba(142,255,113,0.3); }
+.btn-success:hover { background: rgba(142,255,113,0.25); }
+.btn-magenta { background: var(--magenta); color: var(--bg); }
+.btn-magenta:hover { background: #ff7afb; box-shadow: 0 0 20px rgba(255,81,250,0.3); }
 
 /* Client list */
 .client-list { list-style: none; }
@@ -115,45 +198,58 @@ input:focus, select:focus { border-color: var(--accent); }
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 12px 0;
-  border-bottom: 1px solid var(--border);
+  padding: 14px 0;
+  border-bottom: 1px solid rgba(150,248,255,0.08);
 }
 .client-item:last-child { border-bottom: none; }
 .client-info { flex: 1; }
-.client-name { font-weight: 600; font-size: 15px; }
-.client-meta { font-size: 12px; color: var(--text2); margin-top: 2px; }
-.client-actions { display: flex; gap: 6px; }
+.client-name { font-weight: 600; font-size: 15px; display: flex; align-items: center; gap: 8px; }
+.client-meta { font-size: 12px; color: var(--text2); margin-top: 4px; font-family: 'Space Grotesk', monospace; }
+.client-actions { display: flex; gap: 6px; flex-wrap: wrap; }
 
 /* Modal */
 .modal-overlay {
   display: none;
   position: fixed;
   top: 0; left: 0; right: 0; bottom: 0;
-  background: rgba(0,0,0,0.7);
+  background: rgba(0,0,0,0.85);
   z-index: 100;
   align-items: center;
   justify-content: center;
+  backdrop-filter: blur(4px);
 }
 .modal-overlay.show { display: flex; }
 .modal {
   background: var(--card);
   border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 24px;
-  max-width: 500px;
-  width: 90%;
+  padding: 28px;
+  max-width: 540px;
+  width: 92%;
   max-height: 90vh;
   overflow-y: auto;
+  position: relative;
 }
-.modal h3 { margin-bottom: 16px; font-size: 18px; }
+.modal::before {
+  content: '';
+  position: absolute;
+  top: 0; left: 0;
+  width: 100%; height: 2px;
+  background: linear-gradient(90deg, var(--accent), var(--magenta));
+}
+.modal h3 {
+  margin-bottom: 16px;
+  font-size: 16px;
+  text-transform: uppercase;
+  letter-spacing: 2px;
+  color: var(--accent);
+}
 .config-text {
   width: 100%;
   min-height: 200px;
   background: var(--bg);
   border: 1px solid var(--border);
-  border-radius: 8px;
   color: var(--green);
-  font-family: 'SF Mono', Monaco, monospace;
+  font-family: 'Space Grotesk', monospace;
   font-size: 12px;
   padding: 12px;
   resize: vertical;
@@ -163,7 +259,6 @@ input:focus, select:focus { border-color: var(--accent); }
   justify-content: center;
   margin: 16px 0;
   background: white;
-  border-radius: 8px;
   padding: 16px;
 }
 
@@ -171,32 +266,34 @@ input:focus, select:focus { border-color: var(--accent); }
 .log-box {
   background: var(--bg);
   border: 1px solid var(--border);
-  border-radius: 8px;
   padding: 12px;
   max-height: 300px;
   overflow-y: auto;
-  font-family: 'SF Mono', Monaco, monospace;
+  font-family: 'Space Grotesk', monospace;
   font-size: 12px;
-  line-height: 1.6;
+  line-height: 1.8;
 }
-.log-time { color: var(--text2); }
+.log-time { color: var(--magenta); }
 .log-msg { color: var(--text); }
 
 /* Toast */
 .toast {
   position: fixed;
-  bottom: 20px;
-  right: 20px;
+  bottom: 24px;
+  right: 24px;
   background: var(--card);
   border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 12px 20px;
-  font-size: 14px;
+  padding: 14px 24px;
+  font-size: 13px;
   z-index: 200;
   animation: slideIn 0.3s ease;
+  font-family: 'Space Grotesk', sans-serif;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  clip-path: polygon(6% 0, 100% 0, 100% 75%, 94% 100%, 0 100%, 0 25%);
 }
-.toast.success { border-color: var(--green); }
-.toast.error { border-color: var(--red); }
+.toast.success { border-color: var(--green); color: var(--green); }
+.toast.error { border-color: var(--red); color: var(--red); }
 @keyframes slideIn { from { transform: translateY(20px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
 
 /* Inline form */
@@ -207,10 +304,11 @@ input:focus, select:focus { border-color: var(--accent); }
 }
 .inline-form .form-group { flex: 1; margin-bottom: 0; }
 .flex-row { display: flex; gap: 8px; align-items: center; }
+
+/* Link display */
 .link-display {
   padding: 8px 14px;
   background: var(--bg);
-  border-radius: 8px;
   font-size: 13px;
   word-break: break-all;
   border: 1px solid var(--border);
@@ -218,13 +316,14 @@ input:focus, select:focus { border-color: var(--accent); }
 .link-display .type {
   display: inline-block;
   padding: 2px 8px;
-  border-radius: 4px;
   font-size: 11px;
   font-weight: 600;
   margin-right: 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
 }
-.link-display .type.vk { background: rgba(108,92,231,0.2); color: var(--accent2); }
-.link-display .type.yandex { background: rgba(254,202,87,0.2); color: var(--yellow); }
+.link-display .type.vk { background: rgba(150,248,255,0.12); color: var(--accent); }
+.link-display .type.yandex { background: rgba(254,202,87,0.12); color: var(--yellow); }
 .mt-12 { margin-top: 12px; }
 .mb-12 { margin-bottom: 12px; }
 
@@ -234,27 +333,27 @@ input:focus, select:focus { border-color: var(--accent); }
   flex-wrap: wrap;
   gap: 8px;
   margin-bottom: 16px;
-  padding: 12px;
+  padding: 14px;
   background: var(--bg);
   border: 1px solid var(--border);
-  border-radius: 8px;
 }
 .pool-stat {
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 13px;
-  padding: 4px 10px;
-  border-radius: 6px;
-  background: rgba(255,255,255,0.03);
+  font-size: 12px;
+  padding: 6px 12px;
+  background: rgba(150,248,255,0.03);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
 }
 .pool-stat .num {
   font-weight: 700;
-  font-size: 15px;
+  font-size: 16px;
 }
 .pool-stat.st-total .num { color: var(--text); }
 .pool-stat.st-healthy .num { color: var(--green); }
-.pool-stat.st-calling .num { color: #74b9ff; }
+.pool-stat.st-calling .num { color: var(--accent); }
 .pool-stat.st-cooldown .num { color: var(--yellow); }
 .pool-stat.st-rate-limited .num { color: #e17055; }
 .pool-stat.st-banned .num { color: var(--red); }
@@ -268,59 +367,63 @@ input:focus, select:focus { border-color: var(--accent); }
 }
 .acct-table th {
   text-align: left;
-  padding: 8px 10px;
-  border-bottom: 2px solid var(--border);
-  color: var(--text2);
-  font-size: 12px;
+  padding: 10px 10px;
+  border-bottom: 1px solid var(--accent);
+  color: var(--accent);
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 1.5px;
+}
+.acct-table td {
+  padding: 10px 10px;
+  border-bottom: 1px solid rgba(150,248,255,0.08);
+  vertical-align: middle;
+}
+.acct-table tr:last-child td { border-bottom: none; }
+.acct-table tr:hover td { background: rgba(150,248,255,0.03); }
+.status-badge {
+  display: inline-block;
+  padding: 2px 10px;
+  font-size: 10px;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.5px;
 }
-.acct-table td {
-  padding: 8px 10px;
-  border-bottom: 1px solid var(--border);
-  vertical-align: middle;
-}
-.acct-table tr:last-child td { border-bottom: none; }
-.status-badge {
-  display: inline-block;
-  padding: 2px 8px;
-  border-radius: 4px;
-  font-size: 11px;
-  font-weight: 600;
-}
-.status-badge.idle { background: rgba(136,136,160,0.15); color: var(--text2); }
-.status-badge.calling { background: rgba(116,185,255,0.15); color: #74b9ff; }
-.status-badge.cooldown { background: rgba(254,202,87,0.15); color: var(--yellow); }
-.status-badge.rate_limited { background: rgba(225,112,85,0.15); color: #e17055; }
-.status-badge.banned { background: rgba(255,107,107,0.15); color: var(--red); }
-.status-badge.token_expired { background: rgba(255,107,107,0.15); color: var(--red); }
-.status-badge.healthy { background: rgba(0,184,148,0.15); color: var(--green); }
+.status-badge.idle { background: rgba(136,136,160,0.12); color: var(--text2); border: 1px solid rgba(136,136,160,0.2); }
+.status-badge.calling { background: rgba(150,248,255,0.12); color: var(--accent); border: 1px solid rgba(150,248,255,0.3); }
+.status-badge.cooldown { background: rgba(254,202,87,0.12); color: var(--yellow); border: 1px solid rgba(254,202,87,0.3); }
+.status-badge.rate_limited { background: rgba(225,112,85,0.12); color: #e17055; border: 1px solid rgba(225,112,85,0.3); }
+.status-badge.banned { background: rgba(215,56,59,0.12); color: var(--red); border: 1px solid rgba(215,56,59,0.3); }
+.status-badge.token_expired { background: rgba(215,56,59,0.12); color: var(--red); border: 1px solid rgba(215,56,59,0.3); }
+.status-badge.healthy { background: rgba(142,255,113,0.12); color: var(--green); border: 1px solid rgba(142,255,113,0.3); }
 
 /* Collapsible sections */
 .collapse-section {
   margin-top: 12px;
   border: 1px solid var(--border);
-  border-radius: 8px;
   overflow: hidden;
 }
 .collapse-section summary {
   cursor: pointer;
-  padding: 10px 14px;
-  font-size: 13px;
+  padding: 12px 14px;
+  font-size: 12px;
   font-weight: 600;
-  color: var(--accent2);
-  background: rgba(108,92,231,0.05);
+  color: var(--magenta);
+  background: rgba(255,81,250,0.04);
   list-style: none;
   display: flex;
   align-items: center;
   gap: 8px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
 }
 .collapse-section summary::-webkit-details-marker { display: none; }
 .collapse-section summary::before {
   content: '\25B6';
-  font-size: 10px;
+  font-size: 9px;
   transition: transform 0.2s;
+  color: var(--accent);
 }
 .collapse-section[open] summary::before { transform: rotate(90deg); }
 .collapse-section .section-body {
@@ -332,9 +435,9 @@ input:focus, select:focus { border-color: var(--accent); }
   min-height: 100px;
   background: var(--bg);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-left: 2px solid var(--accent);
   color: var(--text);
-  font-family: 'SF Mono', Monaco, monospace;
+  font-family: 'Space Grotesk', monospace;
   font-size: 12px;
   padding: 10px;
   resize: vertical;
@@ -351,11 +454,12 @@ input:focus, select:focus { border-color: var(--accent); }
 .config-grid input[type="number"] {
   width: 100%;
   padding: 8px 10px;
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 6px;
+  background: var(--input-bg);
+  border: 1px solid transparent;
+  border-left: 2px solid var(--accent);
   color: var(--text);
   font-size: 13px;
+  font-family: 'Space Grotesk', sans-serif;
 }
 
 /* Active calls table */
@@ -366,45 +470,81 @@ input:focus, select:focus { border-color: var(--accent); }
 }
 .calls-table th {
   text-align: left;
-  padding: 6px 8px;
-  border-bottom: 2px solid var(--border);
-  color: var(--text2);
-  font-size: 11px;
+  padding: 8px 8px;
+  border-bottom: 1px solid var(--accent);
+  color: var(--accent);
+  font-size: 10px;
   font-weight: 600;
   text-transform: uppercase;
+  letter-spacing: 1px;
 }
 .calls-table td {
-  padding: 6px 8px;
-  border-bottom: 1px solid var(--border);
+  padding: 8px 8px;
+  border-bottom: 1px solid rgba(150,248,255,0.08);
 }
 .calls-table tr:last-child td { border-bottom: none; }
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 4px; }
+::-webkit-scrollbar-track { background: var(--bg); }
+::-webkit-scrollbar-thumb { background: rgba(150,248,255,0.3); }
+::-webkit-scrollbar-thumb:hover { background: var(--accent); }
+
+/* Section divider line */
+.section-line {
+  height: 1px;
+  background: linear-gradient(90deg, var(--accent), transparent);
+  margin: 6px 0 16px 0;
+  opacity: 0.3;
+}
+
+/* Subtitle / hint text */
+.hint-text {
+  font-size: 12px;
+  color: var(--text2);
+  margin-bottom: 12px;
+  letter-spacing: 0.5px;
+}
+
+/* Links row styling */
+.link-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 0;
+  border-bottom: 1px solid rgba(150,248,255,0.08);
+}
+
+/* Selection */
+::selection { background: rgba(150,248,255,0.3); color: #fff; }
 </style>
 </head>
 <body>
 <div class="container">
   <h1>
     <div class="logo">V</div>
-    VKVPN Admin
+    VKVPN // CYBERDECK
   </h1>
 
   <!-- Status cards -->
   <div class="cards">
     <div class="card">
-      <h2>Server</h2>
+      <h2>// Server Node</h2>
       <div id="server-ip" class="stat">--</div>
-      <div style="margin-top:8px">
-        <span class="badge on" id="server-badge">Online</span>
+      <div style="margin-top:10px">
+        <span class="badge on" id="server-badge">ONLINE</span>
       </div>
     </div>
     <div class="card">
-      <h2>Clients</h2>
-      <div id="client-count" class="stat">0 <small>connected</small></div>
+      <h2>// Connected Clients</h2>
+      <div id="client-count" class="stat">0 <small>linked</small></div>
     </div>
   </div>
 
   <!-- Link management -->
   <div class="card full mb-12" style="margin-bottom:16px">
-    <h2>TURN Links</h2>
+    <h2>// TURN Relay Links</h2>
+    <div class="section-line"></div>
     <div id="links-list" style="margin-bottom:12px"></div>
     <div class="inline-form">
       <div class="form-group">
@@ -416,7 +556,7 @@ input:focus, select:focus { border-color: var(--accent); }
         <select id="link-type">
           <option value="">Auto</option>
           <option value="vk">VK</option>
-          <option value="yandex" disabled>Yandex (недоступен)</option>
+          <option value="yandex" disabled>Yandex (N/A)</option>
         </select>
       </div>
       <button class="btn btn-primary" onclick="setLink()" style="margin-bottom:0;align-self:flex-end">Add</button>
@@ -425,8 +565,9 @@ input:focus, select:focus { border-color: var(--accent); }
 
   <!-- VK Accounts -->
   <div class="card full" style="margin-bottom:16px">
-    <h2>VK Accounts</h2>
-    <p style="font-size:13px;color:var(--text2);margin-bottom:12px">
+    <h2>// VK Account Pool</h2>
+    <div class="section-line"></div>
+    <p class="hint-text">
       Server authenticates with VK to extract TURN credentials. Clients receive ready credentials.
     </p>
 
@@ -436,30 +577,30 @@ input:focus, select:focus { border-color: var(--accent); }
       <div class="pool-stat st-healthy"><span class="num" id="ps-healthy">0</span> Healthy</div>
       <div class="pool-stat st-calling"><span class="num" id="ps-calling">0</span> Calling</div>
       <div class="pool-stat st-cooldown"><span class="num" id="ps-cooldown">0</span> Cooldown</div>
-      <div class="pool-stat st-rate-limited"><span class="num" id="ps-rate-limited">0</span> Rate Limited</div>
+      <div class="pool-stat st-rate-limited"><span class="num" id="ps-rate-limited">0</span> Rate Lim</div>
       <div class="pool-stat st-banned"><span class="num" id="ps-banned">0</span> Banned</div>
-      <div class="pool-stat" style="margin-left:auto"><span class="num" id="ps-active-calls" style="color:#74b9ff">0</span> Active Calls</div>
-      <div class="pool-stat"><span class="num" id="ps-assigned-clients" style="color:var(--accent2)">0</span> Assigned Clients</div>
+      <div class="pool-stat" style="margin-left:auto"><span class="num" id="ps-active-calls" style="color:var(--accent)">0</span> Active Calls</div>
+      <div class="pool-stat"><span class="num" id="ps-assigned-clients" style="color:var(--magenta)">0</span> Assigned</div>
     </div>
 
     <!-- Enhanced Account Table -->
     <div id="vk-accounts-list" style="margin-bottom:12px"></div>
 
-    <div id="vk-creds-status" style="margin-bottom:12px;font-size:13px;color:var(--text2)"></div>
+    <div id="vk-creds-status" style="margin-bottom:12px;font-size:12px;color:var(--text2);letter-spacing:0.3px"></div>
     <div style="display:flex;gap:8px;flex-wrap:wrap">
       <button class="btn btn-primary" onclick="addVKAccount()">+ OAuth Login</button>
-      <button class="btn btn-sm" onclick="refreshVKCreds()" style="align-self:center">Refresh Credentials</button>
+      <button class="btn btn-sm" style="background:rgba(150,248,255,0.1);color:var(--accent);border:1px solid var(--border);align-self:center" onclick="refreshVKCreds()">Refresh Creds</button>
     </div>
 
     <!-- Manual token entry -->
     <details style="margin-top:12px">
-      <summary style="cursor:pointer;color:var(--accent2);font-size:13px">Manual token entry</summary>
+      <summary style="cursor:pointer;color:var(--magenta);font-size:12px;text-transform:uppercase;letter-spacing:1px">Manual Token Entry</summary>
       <div class="inline-form" style="margin-top:8px">
         <input type="text" id="vk-token-input" placeholder="Paste VK access_token here" style="flex:1">
         <button class="btn btn-sm btn-success" onclick="addVKToken()">Add Token</button>
       </div>
-      <p style="font-size:12px;color:var(--text2);margin-top:4px">
-        Get token: <a href="https://oauth.vk.com/authorize?client_id=6287487&scope=audio,video,offline&response_type=token&v=5.264&redirect_uri=https://oauth.vk.com/blank.html" target="_blank" style="color:var(--accent2)">click here</a>, log in, copy access_token from URL
+      <p style="font-size:11px;color:var(--text2);margin-top:6px;letter-spacing:0.3px">
+        Get token: <a href="https://oauth.vk.com/authorize?client_id=6287487&scope=audio,video,offline&response_type=token&v=5.264&redirect_uri=https://oauth.vk.com/blank.html" target="_blank" style="color:var(--accent);text-decoration:none;border-bottom:1px solid var(--accent)">CLICK HERE</a>, log in, copy access_token from URL
       </p>
     </details>
 
@@ -467,13 +608,13 @@ input:focus, select:focus { border-color: var(--accent); }
     <details class="collapse-section" style="margin-top:12px">
       <summary>Bulk Add Tokens</summary>
       <div class="section-body">
-        <p style="font-size:12px;color:var(--text2);margin-bottom:8px">
-          Paste multiple tokens, one per line. Format: <code>token</code> or <code>name:token</code>
+        <p style="font-size:11px;color:var(--text2);margin-bottom:8px;letter-spacing:0.3px">
+          Paste multiple tokens, one per line. Format: <code style="color:var(--accent)">token</code> or <code style="color:var(--accent)">name:token</code>
         </p>
         <textarea id="bulk-tokens-input" placeholder="token1&#10;MyAccount:token2&#10;token3"></textarea>
         <div style="margin-top:8px;display:flex;gap:8px;align-items:center">
           <button class="btn btn-success" onclick="bulkAddTokens()">Bulk Add</button>
-          <span id="bulk-add-status" style="font-size:12px;color:var(--text2)"></span>
+          <span id="bulk-add-status" style="font-size:11px;color:var(--text2)"></span>
         </div>
       </div>
     </details>
@@ -484,7 +625,7 @@ input:focus, select:focus { border-color: var(--accent); }
       <div class="section-body">
         <div class="config-grid">
           <div class="form-group">
-            <label>Max calls/day per account</label>
+            <label>Max calls/day per acct</label>
             <input type="number" id="cfg-max-calls" min="1" max="100" value="10">
           </div>
           <div class="form-group">
@@ -500,11 +641,11 @@ input:focus, select:focus { border-color: var(--accent); }
             <input type="number" id="cfg-max-call" min="1" max="240" value="60">
           </div>
           <div class="form-group">
-            <label>Min break between calls (min)</label>
+            <label>Min break between (min)</label>
             <input type="number" id="cfg-min-break" min="0" max="1440" value="10">
           </div>
           <div class="form-group">
-            <label>Max break between calls (min)</label>
+            <label>Max break between (min)</label>
             <input type="number" id="cfg-max-break" min="0" max="1440" value="30">
           </div>
         </div>
@@ -519,7 +660,7 @@ input:focus, select:focus { border-color: var(--accent); }
       <summary>Active Calls (<span id="active-calls-count">0</span>)</summary>
       <div class="section-body">
         <div id="active-calls-list">
-          <p style="font-size:13px;color:var(--text2)">No active calls</p>
+          <p class="hint-text">No active calls</p>
         </div>
       </div>
     </details>
@@ -527,7 +668,8 @@ input:focus, select:focus { border-color: var(--accent); }
 
   <!-- Client management -->
   <div class="card full" style="margin-bottom:16px">
-    <h2>Clients</h2>
+    <h2>// Client Management</h2>
+    <div class="section-line"></div>
     <div class="inline-form mb-12">
       <div class="form-group">
         <input type="text" id="new-client-name" placeholder="Client name (e.g. iPhone_Roma)">
@@ -535,13 +677,14 @@ input:focus, select:focus { border-color: var(--accent); }
       <button class="btn btn-success" onclick="addClient()">+ Add</button>
     </div>
     <ul class="client-list" id="client-list">
-      <li style="color:var(--text2);padding:12px 0">Loading...</li>
+      <li style="color:var(--text2);padding:12px 0;text-transform:uppercase;letter-spacing:1px;font-size:12px">Initializing...</li>
     </ul>
   </div>
 
   <!-- Logs -->
   <div class="card full">
-    <h2>Logs</h2>
+    <h2>// System Log</h2>
+    <div class="section-line"></div>
     <div class="log-box" id="log-box"></div>
   </div>
 </div>
@@ -551,11 +694,11 @@ input:focus, select:focus { border-color: var(--accent); }
   <div class="modal">
     <h3 id="modal-title">Client Config</h3>
     <div style="display:flex;gap:8px;margin-bottom:16px">
-      <button class="btn btn-sm btn-primary" id="tab-wg" onclick="showTab('wg')">WireGuard (iPhone)</button>
-      <button class="btn btn-sm btn-success" id="tab-app" onclick="showTab('app')">VKVPN App (Android)</button>
+      <button class="btn btn-sm btn-primary" id="tab-wg" onclick="showTab('wg')">WireGuard</button>
+      <button class="btn btn-sm btn-success" id="tab-app" onclick="showTab('app')">VKVPN App</button>
     </div>
     <div id="tab-wg-content">
-      <p style="font-size:13px;color:var(--text2);margin-bottom:12px">
+      <p class="hint-text">
         Scan QR in WireGuard app or download .conf file.
       </p>
       <div class="qr-container" id="qr-container"></div>
@@ -565,13 +708,13 @@ input:focus, select:focus { border-color: var(--accent); }
       </div>
     </div>
     <div id="tab-app-content" style="display:none">
-      <p style="font-size:13px;color:var(--text2);margin-bottom:12px">
+      <p class="hint-text">
         Scan QR in VKVPN Android app. Config includes server + TURN link + WireGuard keys.
       </p>
       <div class="qr-container" id="app-qr-container"></div>
       <textarea class="config-text" id="app-config-text" readonly style="min-height:120px"></textarea>
       <div class="flex-row mt-12">
-        <button class="btn btn-success" onclick="copyAppConfig()">Copy Config</button>
+        <button class="btn btn-magenta" onclick="copyAppConfig()">Copy Config</button>
       </div>
     </div>
     <div class="flex-row mt-12">
@@ -636,7 +779,7 @@ async function loadStatus() {
   try {
     const s = await api('/api/status');
     document.getElementById('server-ip').textContent = s.server_ip || '--';
-    document.getElementById('client-count').innerHTML = `${s.clients} <small>total</small>`;
+    document.getElementById('client-count').innerHTML = `${s.clients} <small>linked</small>`;
   } catch(e) {}
 }
 
@@ -646,22 +789,21 @@ async function loadLinks() {
     const list = document.getElementById('links-list');
     const links = data.links || [];
     if (links.length === 0) {
-      list.innerHTML = '<div style="color:var(--text2);padding:8px 0">No links. Add one below.</div>';
+      list.innerHTML = '<div style="color:var(--text2);padding:8px 0;font-size:12px;text-transform:uppercase;letter-spacing:1px">No links. Add one below.</div>';
       return;
     }
     list.innerHTML = links.map(l => {
       const typeClass = l.type === 'vk' ? 'vk' : 'yandex';
-      const typeLabel = l.type === 'vk' ? 'VK' : 'Yandex';
+      const typeLabel = l.type === 'vk' ? 'VK' : 'YA';
       const age = linkAge(l.added_at);
       const ageStyle = linkAgeClass(l.added_at);
-      const activeIcon = l.active ? '&#9679;' : '&#9675;';
-      const activeColor = l.active ? 'var(--green)' : 'var(--text2)';
-      return `<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--border)">
-        <span style="color:${activeColor}">${activeIcon}</span>
-        <span class="type ${typeClass}" style="font-size:11px;padding:2px 6px">${typeLabel}</span>
-        <span style="flex:1;font-size:13px;word-break:break-all">${esc(l.url)}</span>
-        <span style="font-size:12px;${ageStyle}">${age}</span>
-        <button class="btn btn-sm btn-danger" onclick="deleteLink('${esc(l.url)}')" style="padding:2px 8px;font-size:11px">&times;</button>
+      const ledClass = l.active ? 'led green' : 'led off';
+      return `<div class="link-row">
+        <span class="${ledClass}"></span>
+        <span class="type ${typeClass}" style="font-size:10px;padding:2px 8px;text-transform:uppercase;letter-spacing:0.5px">${typeLabel}</span>
+        <span style="flex:1;font-size:12px;word-break:break-all;font-family:'Space Grotesk',monospace">${esc(l.url)}</span>
+        <span style="font-size:11px;${ageStyle};font-weight:600">${age}</span>
+        <button class="btn btn-sm btn-danger" onclick="deleteLink('${esc(l.url)}')" style="padding:2px 10px;font-size:10px">&times;</button>
       </div>`;
     }).join('');
   } catch(e) {}
@@ -717,17 +859,17 @@ async function loadClients() {
     const clients = await api('/api/clients');
     const list = document.getElementById('client-list');
     if (!clients || clients.length === 0) {
-      list.innerHTML = '<li style="color:var(--text2);padding:12px 0">No clients yet. Add one above.</li>';
+      list.innerHTML = '<li style="color:var(--text2);padding:12px 0;font-size:12px;text-transform:uppercase;letter-spacing:1px">No clients yet. Add one above.</li>';
       return;
     }
     list.innerHTML = clients.map(c => {
       const m = metricsData[c.name] || {};
-      const onlineDot = m.online ? '<span style="color:var(--green)">&#9679;</span>' : '<span style="color:var(--text2)">&#9675;</span>';
+      const ledClass = m.online ? 'led green' : 'led off';
       const traffic = (m.rx_bytes || m.tx_bytes) ? ` &middot; &#8595;${formatBytes(m.rx_bytes)} &#8593;${formatBytes(m.tx_bytes)}` : '';
       return `
       <li class="client-item">
         <div class="client-info">
-          <div class="client-name">${onlineDot} ${esc(c.name)}</div>
+          <div class="client-name"><span class="${ledClass}"></span> ${esc(c.name)}</div>
           <div class="client-meta">${c.ip} &middot; ${c.created_at} &middot;
             <span class="badge ${c.enabled ? 'on' : 'off'}">${c.enabled ? 'Active' : 'Disabled'}</span>${traffic}
           </div>
@@ -782,7 +924,7 @@ async function showConfig(name) {
 
   // Load WireGuard config
   const data = await api(`/api/clients/config?name=${encodeURIComponent(name)}`);
-  document.getElementById('modal-title').textContent = `Config: ${name}`;
+  document.getElementById('modal-title').textContent = `CONFIG: ${name}`;
   document.getElementById('config-text').value = data.config;
 
   const qr = qrcode(0, 'M');
@@ -854,7 +996,7 @@ function esc(s) {
   return d.innerHTML;
 }
 
-// ─── VK Accounts ───
+// --- VK Accounts ---
 
 function acctStatusClass(status) {
   const map = {idle:'idle', calling:'calling', cooldown:'cooldown', rate_limited:'rate_limited', banned:'banned', token_expired:'token_expired', healthy:'healthy'};
@@ -872,7 +1014,7 @@ async function loadVKAccounts() {
     const accounts = await api('/api/vk/accounts');
     const list = document.getElementById('vk-accounts-list');
     if (!accounts || accounts.length === 0) {
-      list.innerHTML = '<div style="color:var(--text2);padding:8px 0;font-size:13px">No VK accounts linked</div>';
+      list.innerHTML = '<div style="color:var(--text2);padding:8px 0;font-size:12px;text-transform:uppercase;letter-spacing:1px">No VK accounts linked</div>';
     } else {
       list.innerHTML = `<table class="acct-table">
         <thead><tr>
@@ -884,10 +1026,10 @@ async function loadVKAccounts() {
             <td><strong>${esc(a.name)}</strong></td>
             <td><span class="status-badge ${acctStatusClass(st)}">${acctStatusLabel(st)}</span></td>
             <td>${a.calls_today != null ? a.calls_today : '-'}</td>
-            <td style="font-size:12px;color:var(--red);max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${a.last_error ? esc(a.last_error) : ''}">${a.last_error ? esc(a.last_error) : '<span style="color:var(--text2)">-</span>'}</td>
+            <td style="font-size:11px;color:var(--red);max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${a.last_error ? esc(a.last_error) : ''}">${a.last_error ? esc(a.last_error) : '<span style="color:var(--text2)">-</span>'}</td>
             <td style="text-align:right;white-space:nowrap">
-              <button class="btn btn-sm ${a.enabled ? 'btn-success' : 'btn-danger'}" onclick="toggleAccount('${esc(a.id)}')" style="padding:4px 8px;font-size:11px">${a.enabled ? 'Enabled' : 'Disabled'}</button>
-              <button class="btn btn-sm btn-danger" onclick="deleteVKAccount('${esc(a.id)}')" style="padding:4px 8px;font-size:11px">Delete</button>
+              <button class="btn btn-sm ${a.enabled ? 'btn-success' : 'btn-danger'}" onclick="toggleAccount('${esc(a.id)}')" style="padding:4px 10px;font-size:10px">${a.enabled ? 'Enabled' : 'Disabled'}</button>
+              <button class="btn btn-sm btn-danger" onclick="deleteVKAccount('${esc(a.id)}')" style="padding:4px 10px;font-size:10px">Delete</button>
             </td>
           </tr>`;
         }).join('')}</tbody>
@@ -902,11 +1044,11 @@ async function loadVKAccounts() {
     if (c.has_creds) {
       const fetched = new Date(c.fetched_at).toLocaleTimeString();
       const expires = new Date(c.expires_at).toLocaleTimeString();
-      el.innerHTML = `TURN credentials: <strong style="color:var(--green)">OK</strong> — user=${esc(c.username)}, addr=${esc(c.address)}, fetched ${fetched}, expires ${expires}`;
+      el.innerHTML = `TURN CREDS: <strong style="color:var(--green)">OK</strong> &mdash; user=${esc(c.username)}, addr=${esc(c.address)}, fetched ${fetched}, expires ${expires}`;
     } else if (c.error) {
-      el.innerHTML = `TURN credentials: <strong style="color:var(--red)">Error</strong> — ${esc(c.error)}`;
+      el.innerHTML = `TURN CREDS: <strong style="color:var(--red)">ERROR</strong> &mdash; ${esc(c.error)}`;
     } else {
-      el.innerHTML = 'TURN credentials: <span style="color:var(--text2)">none</span>';
+      el.innerHTML = 'TURN CREDS: <span style="color:var(--text2)">NONE</span>';
     }
   } catch(e) {}
 
@@ -934,7 +1076,7 @@ async function loadPoolStatus() {
     document.getElementById('active-calls-count').textContent = calls.length;
     const callsDiv = document.getElementById('active-calls-list');
     if (calls.length === 0) {
-      callsDiv.innerHTML = '<p style="font-size:13px;color:var(--text2)">No active calls</p>';
+      callsDiv.innerHTML = '<p class="hint-text">No active calls</p>';
     } else {
       callsDiv.innerHTML = `<table class="calls-table">
         <thead><tr>
@@ -942,7 +1084,7 @@ async function loadPoolStatus() {
         </tr></thead>
         <tbody>${calls.map(c => `<tr>
           <td>${esc(c.account_name || '-')}</td>
-          <td style="font-family:monospace;font-size:11px">${esc(c.turn_address || '-')}</td>
+          <td style="font-family:'Space Grotesk',monospace;font-size:11px">${esc(c.turn_address || '-')}</td>
           <td>${c.started_at ? new Date(c.started_at).toLocaleTimeString() : '-'}</td>
           <td>${c.expires_at ? new Date(c.expires_at).toLocaleTimeString() : '-'}</td>
           <td>${c.client_count != null ? c.client_count : '-'}</td>
@@ -1094,18 +1236,6 @@ setInterval(loadLinks, 15000);
 setInterval(loadMetrics, 15000);
 setInterval(loadVKAccounts, 30000);
 setInterval(loadPoolStatus, 30000);
-
-// Enter to add client
-document.getElementById('new-client-name').addEventListener('keydown', e => {
-  if (e.key === 'Enter') addClient();
-});
-document.getElementById('link-input').addEventListener('keydown', e => {
-  if (e.key === 'Enter') setLink();
-});
-// Close modal on overlay click
-document.getElementById('config-modal').addEventListener('click', e => {
-  if (e.target === document.getElementById('config-modal')) closeModal();
-});
 </script>
 </body>
 </html>

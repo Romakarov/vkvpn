@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Cyberpunk 2077 palette -->
+    <color name="cp_background">#FF0E0E0E</color>
+    <color name="cp_surface">#FF1A1919</color>
+    <color name="cp_surface_light">#FF242323</color>
+
+    <color name="cp_cyan">#FF96F8FF</color>
+    <color name="cp_cyan_dim">#3396F8FF</color>
+    <color name="cp_cyan_border">#3396F8FF</color>
+    <color name="cp_cyan_glow">#6696F8FF</color>
+
+    <color name="cp_magenta">#FFFF51FA</color>
+    <color name="cp_magenta_dim">#33FF51FA</color>
+
+    <color name="cp_green">#FF8EFF71</color>
+    <color name="cp_green_dim">#338EFF71</color>
+
+    <color name="cp_red">#FFD7383B</color>
+    <color name="cp_red_dim">#33D7383B</color>
+
+    <color name="cp_yellow">#FFFCEE09</color>
+
+    <color name="cp_text_primary">#FFFFFFFF</color>
+    <color name="cp_text_secondary">#99FFFFFF</color>
+    <color name="cp_text_tertiary">#55FFFFFF</color>
+
+    <color name="cp_dot_grid">#1596F8FF</color>
+</resources>

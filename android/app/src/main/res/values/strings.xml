@@ -1,4 +1,39 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">VKVPN</string>
+
+    <!-- Main screen -->
+    <string name="title_vkvpn">VK//VPN</string>
+    <string name="subtitle_secure">SECURE_TUNNEL::ACTIVE</string>
+    <string name="status_disconnected">DISCONNECTED</string>
+    <string name="status_connected">CONNECTED</string>
+    <string name="status_connecting">CONNECTING...</string>
+    <string name="btn_connect">CONNECT</string>
+    <string name="btn_disconnect">DISCONNECT</string>
+
+    <!-- Stats -->
+    <string name="stat_ping">PING_LATENCY</string>
+    <string name="stat_upload">UP_TRAFFIC</string>
+    <string name="stat_download">DOWN_TRAFFIC</string>
+    <string name="stat_empty">---</string>
+
+    <!-- Buttons -->
+    <string name="btn_reset">RESET_CONFIG</string>
+    <string name="btn_logs">SYSTEM_LOG</string>
+    <string name="btn_copy_logs">COPY</string>
+    <string name="btn_save_logs">SAVE</string>
+    <string name="btn_refresh_logs">REFRESH</string>
+
+    <!-- Setup screen -->
+    <string name="setup_title">VK//VPN</string>
+    <string name="setup_subtitle">INITIAL_SETUP</string>
+    <string name="setup_scan_qr">SCAN QR_CODE</string>
+    <string name="setup_or">// OR PASTE CONFIG MANUALLY</string>
+    <string name="setup_import">IMPORT_CONFIG</string>
+    <string name="setup_hint">{"server":"...", ...}</string>
+    <string name="setup_footer">GET CONFIG QR FROM YOUR ADMIN_PANEL</string>
+
+    <!-- Log viewer -->
+    <string name="log_header">> SYSTEM_LOG // TERMINAL</string>
+    <string name="log_empty">AWAITING CONNECTION... NO TUNNEL ACTIVITY DETECTED.</string>
 </resources>

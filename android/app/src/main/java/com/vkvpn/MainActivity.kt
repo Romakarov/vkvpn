@@ -7,12 +7,14 @@ import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
 import android.content.pm.PackageManager
+import android.graphics.Color
 import android.net.VpnService
 import android.os.Bundle
 import android.os.Environment
 import android.view.View
 import android.widget.*
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.ContextCompat
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 import com.journeyapps.barcodescanner.ScanContract
@@ -26,6 +28,14 @@ class MainActivity : AppCompatActivity() {
         const val VPN_REQUEST_CODE = 1
         const val CAMERA_PERMISSION_CODE = 2
         const val PREFS = "vkvpn_prefs_encrypted"
+
+        // Cyberpunk 2077 palette
+        const val CP_CYAN = 0xFF96F8FF.toInt()
+        const val CP_CYAN_DIM = 0x3396F8FF
+        const val CP_MAGENTA = 0xFFFF51FA.toInt()
+        const val CP_GREEN = 0xFF8EFF71.toInt()
+        const val CP_RED = 0xFFD7383B.toInt()
+        const val CP_YELLOW = 0xFFFCEE09.toInt()
     }
 
     private fun getEncryptedPrefs(): SharedPreferences {
@@ -55,6 +65,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnCopyLogs: Button
     private lateinit var btnSaveLogs: Button
     private lateinit var btnRefreshLogs: Button
+    private lateinit var logHeaderText: TextView
 
     // QR scanner launcher
     private val qrLauncher = registerForActivityResult(ScanContract()) { result: ScanIntentResult ->
@@ -83,6 +94,7 @@ class MainActivity : AppCompatActivity() {
         btnCopyLogs = findViewById(R.id.btn_copy_logs)
         btnSaveLogs = findViewById(R.id.btn_save_logs)
         btnRefreshLogs = findViewById(R.id.btn_refresh_logs)
+        logHeaderText = findViewById(R.id.log_header_text)
 
         btnConnect.setOnClickListener {
             if (TunnelVpnService.isRunning) {
@@ -95,7 +107,7 @@ class MainActivity : AppCompatActivity() {
         btnImport.setOnClickListener {
             val text = etConfig.text.toString().trim()
             if (text.isEmpty()) {
-                Toast.makeText(this, "Paste config JSON", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, "PASTE CONFIG JSON", Toast.LENGTH_SHORT).show()
                 return@setOnClickListener
             }
             processConfig(text)
@@ -135,14 +147,14 @@ class MainActivity : AppCompatActivity() {
         if (requestCode == CAMERA_PERMISSION_CODE && grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
             launchQrScanner()
         } else if (requestCode == CAMERA_PERMISSION_CODE) {
-            Toast.makeText(this, "Camera permission required to scan QR", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, "CAMERA PERMISSION REQUIRED TO SCAN QR", Toast.LENGTH_LONG).show()
         }
     }
 
     private fun launchQrScanner() {
         val options = ScanOptions().apply {
             setDesiredBarcodeFormats(ScanOptions.QR_CODE)
-            setPrompt("Scan config QR from admin panel")
+            setPrompt("SCAN CONFIG QR FROM ADMIN PANEL")
             setBeepEnabled(false)
             setOrientationLocked(true)
             setCameraId(0)
@@ -170,10 +182,10 @@ class MainActivity : AppCompatActivity() {
             prefs.putString("turn_address", json.optString("turn_address", ""))
             prefs.apply()
 
-            Toast.makeText(this, "Config imported! ✓", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "CONFIG IMPORTED SUCCESSFULLY", Toast.LENGTH_SHORT).show()
             showScreen()
         } catch (e: Exception) {
-            Toast.makeText(this, "Invalid config: ${e.message}", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, "INVALID CONFIG: ${e.message}", Toast.LENGTH_LONG).show()
         }
     }
 
@@ -189,7 +201,8 @@ class MainActivity : AppCompatActivity() {
             mainScreen.visibility = View.VISIBLE
             setupScreen.visibility = View.GONE
             val prefs = getEncryptedPrefs()
-            tvClientName.text = prefs.getString("name", "")
+            val name = prefs.getString("name", "") ?: ""
+            tvClientName.text = if (name.isNotEmpty()) "NODE::${name.uppercase()}" else ""
         } else {
             mainScreen.visibility = View.GONE
             setupScreen.visibility = View.VISIBLE
@@ -199,15 +212,17 @@ class MainActivity : AppCompatActivity() {
 
     private fun updateUI() {
         if (TunnelVpnService.isRunning) {
-            btnConnect.text = "Disconnect"
+            // Connected state: bright cyan hexagon, green status
+            btnConnect.text = ""
             btnConnect.setBackgroundResource(R.drawable.btn_circle_active)
-            tvStatus.text = "Connected"
-            tvStatus.setTextColor(0xFF00B894.toInt())
+            tvStatus.text = getString(R.string.status_connected)
+            tvStatus.setTextColor(CP_GREEN)
         } else {
-            btnConnect.text = "Connect"
+            // Disconnected state: dim cyan hexagon outline, red status
+            btnConnect.text = ""
             btnConnect.setBackgroundResource(R.drawable.btn_circle)
-            tvStatus.text = "Disconnected"
-            tvStatus.setTextColor(0xFFFF6B6B.toInt())
+            tvStatus.text = getString(R.string.status_disconnected)
+            tvStatus.setTextColor(CP_RED)
         }
     }
 
@@ -218,13 +233,13 @@ class MainActivity : AppCompatActivity() {
         val wgPrivKey = prefs.getString("wg_privkey", "") ?: ""
 
         if (server.isEmpty() || wgPrivKey.isEmpty()) {
-            Toast.makeText(this, "Config incomplete", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "CONFIG INCOMPLETE", Toast.LENGTH_SHORT).show()
             return
         }
 
         val turnAddress = prefs.getString("turn_address", "") ?: ""
         if (link.isEmpty() && turnAddress.isEmpty()) {
-            Toast.makeText(this, "No TURN credentials. Configure VK token on server.", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, "NO TURN CREDENTIALS. CONFIGURE VK TOKEN ON SERVER.", Toast.LENGTH_LONG).show()
             return
         }
 
@@ -261,7 +276,12 @@ class MainActivity : AppCompatActivity() {
             putExtra("turn_address", prefs.getString("turn_address", ""))
         }
         startForegroundService(intent)
-        Toast.makeText(this, "Connecting...", Toast.LENGTH_SHORT).show()
+
+        // Show connecting state
+        tvStatus.text = getString(R.string.status_connecting)
+        tvStatus.setTextColor(CP_YELLOW)
+
+        Toast.makeText(this, "ESTABLISHING TUNNEL...", Toast.LENGTH_SHORT).show()
         btnConnect.postDelayed({ updateUI() }, 2000)
     }
 
@@ -280,10 +300,12 @@ class MainActivity : AppCompatActivity() {
     private fun toggleLogs() {
         logsVisible = !logsVisible
         if (logsVisible) {
+            logHeaderText.visibility = View.VISIBLE
             logViewer.visibility = View.VISIBLE
             logButtons.visibility = View.VISIBLE
             refreshLogs()
         } else {
+            logHeaderText.visibility = View.GONE
             logViewer.visibility = View.GONE
             logButtons.visibility = View.GONE
         }
@@ -299,19 +321,19 @@ class MainActivity : AppCompatActivity() {
                 val time = e.optString("time", "")
                 val level = e.optString("level", "info")
                 val msg = e.optString("message", "")
-                val prefix = if (level == "error") "❌" else "•"
+                val prefix = if (level == "error") "[ERR]" else "[LOG]"
                 sb.append("$time $prefix $msg\n")
             }
-            tvLogs.text = if (sb.isEmpty()) "No logs yet. Connect to see tunnel activity." else sb.toString()
+            tvLogs.text = if (sb.isEmpty()) getString(R.string.log_empty) else sb.toString()
         } catch (e: Exception) {
-            tvLogs.text = "Error reading logs: ${e.message}"
+            tvLogs.text = "[ERR] FAILED TO READ LOGS: ${e.message}"
         }
     }
 
     private fun copyLogs() {
         val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
         clipboard.setPrimaryClip(ClipData.newPlainText("VKVPN Logs", tvLogs.text))
-        Toast.makeText(this, "Logs copied!", Toast.LENGTH_SHORT).show()
+        Toast.makeText(this, "LOGS COPIED TO CLIPBOARD", Toast.LENGTH_SHORT).show()
     }
 
     private fun saveLogs() {
@@ -319,9 +341,9 @@ class MainActivity : AppCompatActivity() {
             val dir = getExternalFilesDir(null) ?: filesDir
             val file = java.io.File(dir, "vkvpn-logs-${System.currentTimeMillis()}.txt")
             file.writeText(tvLogs.text.toString())
-            Toast.makeText(this, "Saved: ${file.name}", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, "SAVED: ${file.name}", Toast.LENGTH_LONG).show()
         } catch (e: Exception) {
-            Toast.makeText(this, "Save error: ${e.message}", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, "SAVE ERROR: ${e.message}", Toast.LENGTH_LONG).show()
         }
     }
 }
