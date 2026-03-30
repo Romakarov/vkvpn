@@ -44,9 +44,15 @@ class TunnelVpnService : VpnService() {
                 val turnUser = intent.getStringExtra("turn_username") ?: ""
                 val turnPass = intent.getStringExtra("turn_password") ?: ""
                 val turnAddr = intent.getStringExtra("turn_address") ?: ""
+                val protocol = intent.getStringExtra("protocol") ?: "turn"
+                val telemostLink = intent.getStringExtra("telemost_link") ?: ""
 
                 startForeground(1, buildNotification("Connecting..."))
-                startTunnel(server, link, provider, wgPrivKey, wgAddress, wgDns, serverPubKey, dtlsPort, dtlsFingerprint, turnUser, turnPass, turnAddr)
+                if (protocol == "vp8" && telemostLink.isNotEmpty()) {
+                    startVP8Tunnel(telemostLink, wgPrivKey, wgAddress, wgDns, serverPubKey)
+                } else {
+                    startTunnel(server, link, provider, wgPrivKey, wgAddress, wgDns, serverPubKey, dtlsPort, dtlsFingerprint, turnUser, turnPass, turnAddr)
+                }
             }
             ACTION_STOP -> {
                 stopTunnel()
@@ -127,6 +133,60 @@ class TunnelVpnService : VpnService() {
 
             } catch (e: Exception) {
                 Log.e(TAG, "Tunnel error", e)
+            } finally {
+                isRunning = false
+                try { Tunnel.stop() } catch (_: Exception) {}
+                stopForeground(STOP_FOREGROUND_REMOVE)
+                stopSelf()
+            }
+        }.also { it.start() }
+    }
+
+    private fun startVP8Tunnel(
+        telemostLink: String, wgPrivKey: String, wgAddress: String,
+        wgDns: String, serverPubKey: String
+    ) {
+        tunnelThread = Thread {
+            try {
+                val builder = Builder()
+                    .setSession("VKVPN VP8")
+                    .addAddress(wgAddress, 32)
+                    .addRoute("0.0.0.0", 0)
+                    .addRoute("::", 0)
+                    .setMtu(1280)
+                    .setBlocking(true)
+
+                wgDns.split(",").map { it.trim() }.filter { it.isNotEmpty() }.forEach {
+                    builder.addDnsServer(it)
+                }
+                builder.addDisallowedApplication(packageName)
+
+                vpnInterface = builder.establish()
+                if (vpnInterface == null) {
+                    Log.e(TAG, "Failed to establish VPN")
+                    return@Thread
+                }
+
+                val tunFd = vpnInterface!!.detachFd()
+                vpnInterface = null
+
+                Log.i(TAG, "Starting VP8/Telemost tunnel")
+                Tunnel.startVP8(
+                    tunFd.toLong(), telemostLink,
+                    wgPrivKey, serverPubKey, wgAddress, wgDns
+                )
+
+                isRunning = true
+                updateNotification("Connected (VP8)")
+
+                while (isRunning && Tunnel.isRunning()) {
+                    Thread.sleep(1000)
+                }
+
+                updateNotification("Disconnected")
+
+            } catch (e: Exception) {
+                Log.e(TAG, "VP8 tunnel error", e)
             } finally {
                 isRunning = false
                 try { Tunnel.stop() } catch (_: Exception) {}

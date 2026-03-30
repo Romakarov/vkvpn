@@ -99,6 +99,43 @@
                 android:fontFamily="sans-serif-medium"
                 android:letterSpacing="0.2" />
 
+            <!-- ── Protocol Selector ── -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="16dp"
+                android:orientation="horizontal"
+                android:gravity="center">
+
+                <Button
+                    android:id="@+id/btn_proto_turn"
+                    android:layout_width="0dp"
+                    android:layout_weight="1"
+                    android:layout_height="40dp"
+                    android:layout_marginEnd="4dp"
+                    android:text="TURN // VK"
+                    android:textSize="12sp"
+                    android:textColor="@color/cp_cyan"
+                    android:background="@drawable/btn_proto_selected"
+                    android:fontFamily="monospace"
+                    android:letterSpacing="0.05"
+                    android:stateListAnimator="@null" />
+
+                <Button
+                    android:id="@+id/btn_proto_vp8"
+                    android:layout_width="0dp"
+                    android:layout_weight="1"
+                    android:layout_height="40dp"
+                    android:layout_marginStart="4dp"
+                    android:text="VP8 // TELEMOST"
+                    android:textSize="12sp"
+                    android:textColor="@color/cp_magenta"
+                    android:background="@drawable/btn_proto_unselected"
+                    android:fontFamily="monospace"
+                    android:letterSpacing="0.05"
+                    android:stateListAnimator="@null" />
+            </LinearLayout>
+
             <!-- ── Hexagonal Power Button ── -->
             <FrameLayout
                 android:layout_width="180dp"

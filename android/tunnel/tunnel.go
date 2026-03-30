@@ -34,6 +34,9 @@ import (
 	"golang.zx2c4.com/wireguard/device"
 	"golang.zx2c4.com/wireguard/tun"
 
+	"github.com/Romakarov/vkvpn/pkg/telemost"
+	"github.com/Romakarov/vkvpn/pkg/vp8tunnel"
+
 	_ "golang.org/x/mobile/bind" // required by gomobile
 )
 
@@ -296,6 +299,196 @@ func StartWithCreds(tunFd int, peerAddr, vkLink, yandexLink string, connections 
 
 // vp8FallbackLink stores the Telemost conference link for VP8 transport fallback.
 var vp8FallbackLink string
+
+// StartVP8 starts VP8 tunnel through Telemost conference.
+// tunFd: TUN fd from Android VpnService
+// telemostLink: Telemost conference URL
+// wgPrivKey/serverPubKey: WireGuard keys (base64)
+func StartVP8(tunFd int, telemostLink, wgPrivKey, serverPubKey, wgAddress, wgDNS string) error {
+	tunnelMu.Lock()
+	if running {
+		tunnelMu.Unlock()
+		return fmt.Errorf("tunnel already running")
+	}
+	running = true
+	tunnelMu.Unlock()
+
+	resetRunning := func() { tunnelMu.Lock(); running = false; tunnelMu.Unlock() }
+
+	if telemostLink == "" {
+		resetRunning()
+		return fmt.Errorf("telemost link required for VP8 mode")
+	}
+
+	logMsg("[VP8] Starting VP8/Telemost tunnel...")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	tunnelCtx = ctx
+	tunnelCancel = cancel
+
+	go func() {
+		defer resetRunning()
+		defer cancel()
+
+		err := runVP8Tunnel(ctx, tunFd, telemostLink, wgPrivKey, serverPubKey, wgAddress, wgDNS)
+		if err != nil && ctx.Err() == nil {
+			logMsg("[VP8] Tunnel error: %s", err)
+		}
+	}()
+
+	return nil
+}
+
+// runVP8Tunnel runs the VP8/Telemost tunnel loop.
+func runVP8Tunnel(ctx context.Context, tunFd int, telemostLink, wgPrivKey, serverPubKey, wgAddress, wgDNS string) error {
+	// Create WireGuard device the same way as TURN mode
+	tunDev, err := tun.CreateTUNFromFile(os.NewFile(uintptr(tunFd), "/dev/tun"), 0)
+	if err != nil {
+		return fmt.Errorf("create TUN: %w", err)
+	}
+
+	// Listen on local UDP for WireGuard
+	listenConn, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		return fmt.Errorf("listen UDP: %w", err)
+	}
+	defer listenConn.Close()
+
+	localAddr := listenConn.LocalAddr().String()
+	logMsg("[VP8] WireGuard endpoint: %s", localAddr)
+
+	// Create WireGuard device
+	wgConf := fmt.Sprintf(`private_key=%s
+public_key=%s
+endpoint=%s
+allowed_ip=0.0.0.0/0
+persistent_keepalive_interval=25
+`, hexKey(wgPrivKey), hexKey(serverPubKey), localAddr)
+
+	dev := device.NewDevice(tunDev, conn.NewDefaultBind(), device.NewLogger(device.LogLevelSilent, ""))
+	if err := dev.IpcSet(wgConf); err != nil {
+		dev.Close()
+		return fmt.Errorf("WG config: %w", err)
+	}
+	if err := dev.Up(); err != nil {
+		dev.Close()
+		return fmt.Errorf("WG up: %w", err)
+	}
+	defer dev.Close()
+	logMsg("[VP8] WireGuard device up")
+
+	// Loop: connect to Telemost, bridge VP8↔WireGuard, reconnect on failure
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
+		client := telemost.NewClient(log.Default())
+		tunnelReady := make(chan *vp8tunnel.Tunnel, 1)
+		client.OnTunnel = func(t *vp8tunnel.Tunnel) {
+			tunnelReady <- t
+		}
+
+		callDone := make(chan error, 1)
+		go func() {
+			callDone <- client.JoinCall(ctx, telemostLink)
+		}()
+
+		select {
+		case tunnel := <-tunnelReady:
+			logMsg("[VP8] Telemost tunnel established — bridging to WireGuard")
+			bridgeVP8ToLocal(ctx, listenConn, tunnel)
+			logMsg("[VP8] Bridge ended")
+
+		case err := <-callDone:
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			logMsg("[VP8] Telemost failed: %v", err)
+		}
+
+		client.Close()
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		logMsg("[VP8] Reconnecting in 5s...")
+		select {
+		case <-time.After(5 * time.Second):
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+}
+
+// bridgeVP8ToLocal forwards packets between local WireGuard UDP and VP8 tunnel.
+func bridgeVP8ToLocal(ctx context.Context, localConn net.PacketConn, tunnel *vp8tunnel.Tunnel) {
+	pconn := vp8tunnel.NewPacketConn(tunnel)
+	var wgClientAddr atomic.Value // stores *net.Addr of WG client
+
+	ctx2, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	// Local WG → VP8
+	go func() {
+		defer wg.Done()
+		defer cancel()
+		buf := make([]byte, 1600)
+		for {
+			n, addr, err := localConn.ReadFrom(buf)
+			if err != nil || ctx2.Err() != nil {
+				return
+			}
+			wgClientAddr.Store(&addr)
+			if _, err := pconn.WriteTo(buf[:n], nil); err != nil {
+				return
+			}
+		}
+	}()
+
+	// VP8 → Local WG
+	go func() {
+		defer wg.Done()
+		defer cancel()
+		buf := make([]byte, 1600)
+		for {
+			n, _, err := pconn.ReadFrom(buf)
+			if err != nil || ctx2.Err() != nil {
+				return
+			}
+			addrPtr := wgClientAddr.Load()
+			if addrPtr == nil {
+				continue
+			}
+			addr := *addrPtr.(*net.Addr)
+			if _, err := localConn.WriteTo(buf[:n], addr); err != nil {
+				return
+			}
+		}
+	}()
+
+	// Wait for tunnel to close or context cancel
+	select {
+	case <-tunnel.Done():
+	case <-ctx2.Done():
+	}
+	cancel()
+	wg.Wait()
+}
+
+
+// hexKey converts base64 WG key to hex for wireguard IPC
+func hexKey(b64 string) string {
+	raw, err := base64.StdEncoding.DecodeString(b64)
+	if err != nil {
+		return ""
+	}
+	return hex.EncodeToString(raw)
+}
 
 // serverTurnCreds holds pre-supplied TURN credentials from the VPN server
 var serverTurnCreds struct {

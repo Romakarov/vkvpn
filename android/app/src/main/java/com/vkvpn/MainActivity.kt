@@ -66,6 +66,9 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnSaveLogs: Button
     private lateinit var btnRefreshLogs: Button
     private lateinit var logHeaderText: TextView
+    private lateinit var btnProtoTurn: Button
+    private lateinit var btnProtoVp8: Button
+    private var selectedProtocol = "turn" // "turn" or "vp8"
 
     // QR scanner launcher
     private val qrLauncher = registerForActivityResult(ScanContract()) { result: ScanIntentResult ->
@@ -95,6 +98,11 @@ class MainActivity : AppCompatActivity() {
         btnSaveLogs = findViewById(R.id.btn_save_logs)
         btnRefreshLogs = findViewById(R.id.btn_refresh_logs)
         logHeaderText = findViewById(R.id.log_header_text)
+        btnProtoTurn = findViewById(R.id.btn_proto_turn)
+        btnProtoVp8 = findViewById(R.id.btn_proto_vp8)
+
+        btnProtoTurn.setOnClickListener { selectProtocol("turn") }
+        btnProtoVp8.setOnClickListener { selectProtocol("vp8") }
 
         btnConnect.setOnClickListener {
             if (TunnelVpnService.isRunning) {
@@ -180,6 +188,7 @@ class MainActivity : AppCompatActivity() {
             prefs.putString("turn_username", json.optString("turn_username", ""))
             prefs.putString("turn_password", json.optString("turn_password", ""))
             prefs.putString("turn_address", json.optString("turn_address", ""))
+            prefs.putString("telemost_link", json.optString("telemost_link", ""))
             prefs.apply()
 
             Toast.makeText(this, "CONFIG IMPORTED SUCCESSFULLY", Toast.LENGTH_SHORT).show()
@@ -203,6 +212,8 @@ class MainActivity : AppCompatActivity() {
             val prefs = getEncryptedPrefs()
             val name = prefs.getString("name", "") ?: ""
             tvClientName.text = if (name.isNotEmpty()) "NODE::${name.uppercase()}" else ""
+            val savedProto = prefs.getString("protocol", "turn") ?: "turn"
+            selectProtocol(savedProto)
         } else {
             mainScreen.visibility = View.GONE
             setupScreen.visibility = View.VISIBLE
@@ -224,6 +235,23 @@ class MainActivity : AppCompatActivity() {
             tvStatus.text = getString(R.string.status_disconnected)
             tvStatus.setTextColor(CP_RED)
         }
+    }
+
+    private fun selectProtocol(proto: String) {
+        selectedProtocol = proto
+        if (proto == "turn") {
+            btnProtoTurn.setBackgroundResource(R.drawable.btn_proto_selected)
+            btnProtoTurn.setTextColor(0xFF0E0E0E.toInt()) // dark text on cyan
+            btnProtoVp8.setBackgroundResource(R.drawable.btn_proto_unselected)
+            btnProtoVp8.setTextColor(0xFFFF51FA.toInt()) // magenta text
+        } else {
+            btnProtoVp8.setBackgroundResource(R.drawable.btn_proto_selected_magenta)
+            btnProtoVp8.setTextColor(0xFF0E0E0E.toInt()) // dark text on magenta
+            btnProtoTurn.setBackgroundResource(R.drawable.btn_proto_unselected)
+            btnProtoTurn.setTextColor(0xFF96F8FF.toInt()) // cyan text
+        }
+        // Save preference
+        getEncryptedPrefs().edit().putString("protocol", proto).apply()
     }
 
     private fun startVpn() {
@@ -274,6 +302,8 @@ class MainActivity : AppCompatActivity() {
             putExtra("turn_username", prefs.getString("turn_username", ""))
             putExtra("turn_password", prefs.getString("turn_password", ""))
             putExtra("turn_address", prefs.getString("turn_address", ""))
+            putExtra("protocol", selectedProtocol)
+            putExtra("telemost_link", prefs.getString("telemost_link", ""))
         }
         startForegroundService(intent)
 

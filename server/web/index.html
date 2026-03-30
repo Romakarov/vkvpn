@@ -666,6 +666,34 @@ input::placeholder { color: var(--text2); }
     </details>
   </div>
 
+  <!-- VP8 / Telemost Transport -->
+  <div class="card full" style="margin-bottom:16px">
+    <h2>// VP8 Transport <span id="vp8-badge" style="font-size:11px;padding:2px 8px;border:1px solid #D7383B;color:#D7383B;margin-left:8px;letter-spacing:0.05em">OFFLINE</span></h2>
+    <div class="section-line"></div>
+    <p class="hint-text">
+      Second protocol: tunnels WireGuard packets inside VP8 video frames through Yandex Telemost SFU.
+      Create a conference at <a href="https://telemost.yandex.ru" target="_blank" style="color:#96F8FF">telemost.yandex.ru</a> and paste the link below.
+    </p>
+    <div class="inline-form" style="margin-bottom:12px">
+      <div class="form-group" style="flex:1">
+        <label>Telemost Link</label>
+        <input type="text" id="telemost-link-input" placeholder="https://telemost.yandex.ru/j/...">
+      </div>
+      <div style="display:flex;gap:8px;align-self:flex-end">
+        <button class="btn btn-primary" onclick="saveVP8Config()" style="margin-bottom:0">Save</button>
+        <button class="btn" id="vp8-toggle-btn" onclick="toggleVP8()" style="margin-bottom:0;border-color:#8EFF71;color:#8EFF71">Enable</button>
+      </div>
+    </div>
+    <div id="vp8-status" style="display:none;padding:12px;background:#1A1919;border:1px solid rgba(150,248,255,0.15);margin-bottom:8px">
+      <div style="display:flex;gap:24px;font-family:monospace;font-size:12px;letter-spacing:0.05em">
+        <div>STATUS: <span id="vp8-conn-status" style="color:#8EFF71">CONNECTED</span></div>
+        <div>UPTIME: <span id="vp8-uptime" style="color:#96F8FF">--</span></div>
+        <div>IN: <span id="vp8-bytes-in" style="color:#96F8FF">0 B</span></div>
+        <div>OUT: <span id="vp8-bytes-out" style="color:#96F8FF">0 B</span></div>
+      </div>
+    </div>
+  </div>
+
   <!-- Client management -->
   <div class="card full" style="margin-bottom:16px">
     <h2>// Client Management</h2>
@@ -1223,6 +1251,96 @@ async function savePoolConfig() {
   }
 }
 
+// ─── VP8 / Telemost ───
+
+async function loadVP8Status() {
+  try {
+    const r = await fetch('/api/vp8?token=' + TOKEN);
+    const d = await r.json();
+    const linkInput = document.getElementById('telemost-link-input');
+    const badge = document.getElementById('vp8-badge');
+    const toggleBtn = document.getElementById('vp8-toggle-btn');
+    const statusDiv = document.getElementById('vp8-status');
+
+    if (d.telemost_link && !linkInput.value) linkInput.value = d.telemost_link;
+
+    if (d.enabled) {
+      toggleBtn.textContent = 'DISABLE';
+      toggleBtn.style.borderColor = '#D7383B';
+      toggleBtn.style.color = '#D7383B';
+    } else {
+      toggleBtn.textContent = 'ENABLE';
+      toggleBtn.style.borderColor = '#8EFF71';
+      toggleBtn.style.color = '#8EFF71';
+    }
+
+    if (d.connected) {
+      badge.textContent = 'ONLINE';
+      badge.style.borderColor = '#8EFF71';
+      badge.style.color = '#8EFF71';
+      statusDiv.style.display = 'block';
+      document.getElementById('vp8-conn-status').textContent = 'CONNECTED';
+      document.getElementById('vp8-conn-status').style.color = '#8EFF71';
+      if (d.connected_at) {
+        const elapsed = Math.floor((Date.now() - new Date(d.connected_at).getTime()) / 1000);
+        const h = Math.floor(elapsed / 3600);
+        const m = Math.floor((elapsed % 3600) / 60);
+        const s = elapsed % 60;
+        document.getElementById('vp8-uptime').textContent = `${h}h ${m}m ${s}s`;
+      }
+      document.getElementById('vp8-bytes-in').textContent = formatBytes(d.bytes_in || 0);
+      document.getElementById('vp8-bytes-out').textContent = formatBytes(d.bytes_out || 0);
+    } else if (d.enabled) {
+      badge.textContent = 'CONNECTING';
+      badge.style.borderColor = '#FCEE09';
+      badge.style.color = '#FCEE09';
+      statusDiv.style.display = 'block';
+      document.getElementById('vp8-conn-status').textContent = d.last_error || 'CONNECTING...';
+      document.getElementById('vp8-conn-status').style.color = '#FCEE09';
+    } else {
+      badge.textContent = 'OFFLINE';
+      badge.style.borderColor = '#D7383B';
+      badge.style.color = '#D7383B';
+      statusDiv.style.display = 'none';
+    }
+  } catch(e) {}
+}
+
+function formatBytes(b) {
+  if (b < 1024) return b + ' B';
+  if (b < 1048576) return (b/1024).toFixed(1) + ' KB';
+  if (b < 1073741824) return (b/1048576).toFixed(1) + ' MB';
+  return (b/1073741824).toFixed(2) + ' GB';
+}
+
+async function saveVP8Config() {
+  const link = document.getElementById('telemost-link-input').value.trim();
+  if (!link) { toast('Enter Telemost link', 'error'); return; }
+  try {
+    await fetch('/api/vp8?token=' + TOKEN, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({telemost_link: link})
+    });
+    toast('Telemost link saved');
+    loadVP8Status();
+  } catch(e) { toast('Error: ' + e.message, 'error'); }
+}
+
+async function toggleVP8() {
+  try {
+    const r = await fetch('/api/vp8?token=' + TOKEN);
+    const d = await r.json();
+    await fetch('/api/vp8?token=' + TOKEN, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({enabled: !d.enabled})
+    });
+    toast(d.enabled ? 'VP8 disabled' : 'VP8 enabled');
+    loadVP8Status();
+  } catch(e) { toast('Error: ' + e.message, 'error'); }
+}
+
 // Init
 loadStatus();
 loadLinks();
@@ -1230,12 +1348,14 @@ loadClients();
 loadMetrics();
 loadLogs();
 loadVKAccounts();
+loadVP8Status();
 setInterval(loadLogs, 3000);
 setInterval(loadStatus, 10000);
 setInterval(loadLinks, 15000);
 setInterval(loadMetrics, 15000);
 setInterval(loadVKAccounts, 30000);
 setInterval(loadPoolStatus, 30000);
+setInterval(loadVP8Status, 10000);
 </script>
 </body>
 </html>

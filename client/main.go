@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/Romakarov/vkvpn/pkg/packetpipe"
+	"github.com/Romakarov/vkvpn/pkg/telemost"
 	"github.com/Romakarov/vkvpn/pkg/turnauth"
 	"github.com/Romakarov/vkvpn/pkg/vkcall"
 	"github.com/Romakarov/vkvpn/pkg/vp8tunnel"
@@ -461,7 +462,8 @@ func main() {
 	listen := flag.String("listen", "127.0.0.1:9000", "listen on ip:port")
 	vklink := flag.String("vk-link", "", "VK calls invite link \"https://vk.com/call/join/...\"")
 	yalink := flag.String("yandex-link", "", "Yandex telemost invite link \"https://telemost.yandex.ru/j/...\"")
-	vp8mode := flag.Bool("vp8", false, "use VP8 transport (data inside VK Call video) instead of TURN")
+	vp8mode := flag.Bool("vp8", false, "use VP8 transport (data inside video stream) instead of TURN")
+	telemostLink := flag.String("telemost-link", "", "Telemost conference link for VP8 transport")
 	peerAddr := flag.String("peer", "", "peer server address (host:port)")
 	dtlsFingerprint := flag.String("dtls-fingerprint", "", "expected DTLS server certificate SHA-256 fingerprint (hex)")
 	n := flag.Int("n", 0, "connections to TURN (default 16 for VK, 1 for Yandex)")
@@ -474,14 +476,19 @@ func main() {
 	if *dtlsFingerprint != "" {
 		expectedFingerprint = strings.ToLower(*dtlsFingerprint)
 	}
-	// VP8 mode — tunnel data through VK Call video stream
+	// VP8 mode — tunnel data through video stream (Telemost or VK Call)
 	if *vp8mode {
-		if *vklink == "" {
-			log.Fatalf("VP8 mode requires -vk-link to join a VK call")
+		if *telemostLink != "" {
+			log.Printf("VP8 transport mode: data inside Telemost video stream")
+			runVP8TelemostClient(ctx, *listen, *telemostLink)
+			return
 		}
-		log.Printf("VP8 transport mode: data inside VK Call video stream")
-		runVP8Client(ctx, *listen, *vklink)
-		return
+		if *vklink != "" {
+			log.Printf("VP8 transport mode: data inside VK Call video stream")
+			runVP8Client(ctx, *listen, *vklink)
+			return
+		}
+		log.Fatalf("VP8 mode requires --telemost-link or -vk-link")
 	}
 
 	if *peerAddr == "" {
@@ -664,6 +671,60 @@ func runVP8Client(ctx context.Context, listenAddr string, vkLink string) {
 			return
 		}
 		log.Printf("Reconnecting VP8 in 5s...")
+		time.Sleep(5 * time.Second)
+	}
+}
+
+// runVP8TelemostClient tunnels WireGuard through Yandex Telemost video stream.
+func runVP8TelemostClient(ctx context.Context, listenAddr string, confLink string) {
+	listenUDP, err := net.ResolveUDPAddr("udp", listenAddr)
+	if err != nil {
+		log.Fatalf("Resolve listen addr: %s", err)
+	}
+	wgConn, err := net.ListenUDP("udp", listenUDP)
+	if err != nil {
+		log.Fatalf("Listen UDP: %s", err)
+	}
+	defer wgConn.Close()
+	log.Printf("VP8/Telemost client listening on %s for WireGuard", listenAddr)
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
+		client := telemost.NewClient(log.Default())
+		tunnelReady := make(chan *vp8tunnel.Tunnel, 1)
+		client.OnTunnel = func(t *vp8tunnel.Tunnel) {
+			tunnelReady <- t
+		}
+
+		callDone := make(chan error, 1)
+		go func() {
+			callDone <- client.JoinCall(ctx, confLink)
+		}()
+
+		select {
+		case tunnel := <-tunnelReady:
+			log.Printf("VP8/Telemost tunnel ready — bridging WireGuard")
+			pconn := vp8tunnel.NewPacketConn(tunnel)
+			bridgeVP8(ctx, wgConn, pconn, tunnel.Done())
+			log.Printf("VP8/Telemost bridge ended")
+
+		case err := <-callDone:
+			if ctx.Err() != nil {
+				return
+			}
+			log.Printf("VP8/Telemost call failed: %v", err)
+		}
+
+		client.Close()
+		if ctx.Err() != nil {
+			return
+		}
+		log.Printf("Reconnecting VP8/Telemost in 5s...")
 		time.Sleep(5 * time.Second)
 	}
 }

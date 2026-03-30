@@ -42,7 +42,7 @@ import (
 
 	"github.com/Romakarov/vkvpn/pkg/sessionmux"
 	"github.com/Romakarov/vkvpn/pkg/turnauth"
-	"github.com/Romakarov/vkvpn/pkg/vkcall"
+	"github.com/Romakarov/vkvpn/pkg/telemost"
 	"github.com/Romakarov/vkvpn/pkg/vp8tunnel"
 	"github.com/pion/dtls/v3"
 	"github.com/pion/dtls/v3/pkg/crypto/selfsign"
@@ -71,9 +71,9 @@ type Config struct {
 	AdminPass     string     `json:"admin_pass,omitempty"`     // legacy plaintext, migrated on startup
 	AdminPassHash string     `json:"admin_pass_hash,omitempty"` // bcrypt hash
 	Pool          PoolConfig `json:"pool_config,omitempty"`
-	// VP8 transport — second protocol that tunnels data through VK Call video stream.
-	// Uses VKAccounts pool to auto-create calls. No manual links needed.
-	VP8Enabled bool `json:"vp8_enabled,omitempty"`
+	// VP8 transport — second protocol that tunnels data through Telemost video stream.
+	VP8Enabled   bool   `json:"vp8_enabled,omitempty"`
+	TelemostLink string `json:"telemost_link,omitempty"`
 }
 
 type Client struct {
@@ -687,11 +687,19 @@ func legacyBridgeWithFirstPacket(ctx context.Context, conn net.Conn, connectAddr
 
 // ─── VP8/Telemost Server (secondary transport) ───
 
-// runVP8Server creates VK calls and bridges VP8 tunnel to WireGuard.
-// Uses the VKAccounts pool to auto-create calls — no manual links needed.
-// Automatically reconnects and rotates accounts.
+var vp8Status struct {
+	sync.RWMutex
+	Connected   bool
+	ConnectedAt time.Time
+	LastError   string
+	BytesIn     int64
+	BytesOut    int64
+}
+
+// runVP8Server connects to Telemost and bridges VP8 tunnel to WireGuard.
+// Reads TelemostLink from config each iteration, automatically reconnects.
 func runVP8Server(ctx context.Context, wgAddr string) {
-	logger.Printf("VP8 transport starting (auto VK Call mode)")
+	logger.Printf("VP8 transport starting (Telemost mode)")
 
 	for {
 		select {
@@ -700,10 +708,16 @@ func runVP8Server(ctx context.Context, wgAddr string) {
 		default:
 		}
 
-		// Find an available VK account
-		token := getAvailableVKToken()
-		if token == "" {
-			logger.Printf("VP8: no available VK accounts, retrying in 30s...")
+		cfg.mu.RLock()
+		link := cfg.TelemostLink
+		cfg.mu.RUnlock()
+
+		if link == "" {
+			logger.Printf("VP8: no Telemost link configured, waiting 30s...")
+			vp8Status.Lock()
+			vp8Status.Connected = false
+			vp8Status.LastError = "no Telemost link configured"
+			vp8Status.Unlock()
 			select {
 			case <-time.After(30 * time.Second):
 			case <-ctx.Done():
@@ -712,36 +726,40 @@ func runVP8Server(ctx context.Context, wgAddr string) {
 			continue
 		}
 
-		client := vkcall.NewClient(logger)
+		client := telemost.NewClient(logger)
 		client.OnTunnel = func(tunnel *vp8tunnel.Tunnel) {
-			logger.Printf("VP8 tunnel established — bridging to WireGuard %s", wgAddr)
+			logger.Printf("VP8 tunnel established via Telemost — bridging to WireGuard %s", wgAddr)
+			vp8Status.Lock()
+			vp8Status.Connected = true
+			vp8Status.ConnectedAt = time.Now()
+			vp8Status.LastError = ""
+			vp8Status.Unlock()
 			bridgeVP8ToWG(tunnel, wgAddr)
+			vp8Status.Lock()
+			vp8Status.Connected = false
+			vp8Status.Unlock()
 		}
 
-		err := client.JoinCall(ctx, token)
+		err := client.JoinCall(ctx, link)
 		client.Close()
 		if ctx.Err() != nil {
 			return
 		}
-		logger.Printf("VP8 call ended: %v — reconnecting in 5s...", err)
+		errMsg := ""
+		if err != nil {
+			errMsg = err.Error()
+		}
+		vp8Status.Lock()
+		vp8Status.Connected = false
+		vp8Status.LastError = errMsg
+		vp8Status.Unlock()
+		logger.Printf("VP8 Telemost session ended: %v — reconnecting in 5s...", err)
 		select {
 		case <-time.After(5 * time.Second):
 		case <-ctx.Done():
 			return
 		}
 	}
-}
-
-// getAvailableVKToken returns an OAuth token from the first enabled VK account.
-func getAvailableVKToken() string {
-	cfg.mu.RLock()
-	defer cfg.mu.RUnlock()
-	for _, acc := range cfg.VKAccounts {
-		if acc.Enabled && acc.AccessToken != "" && acc.Status != "banned" && acc.Status != "token_expired" {
-			return acc.AccessToken
-		}
-	}
-	return ""
 }
 
 // bridgeVP8ToWG bridges a VP8 tunnel to WireGuard UDP.
@@ -1023,15 +1041,26 @@ func apiVP8Config(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet:
 		cfg.mu.RLock()
 		resp := map[string]interface{}{
-			"enabled": cfg.VP8Enabled,
+			"enabled":       cfg.VP8Enabled,
+			"telemost_link": cfg.TelemostLink,
 		}
 		cfg.mu.RUnlock()
+		vp8Status.RLock()
+		resp["connected"] = vp8Status.Connected
+		if !vp8Status.ConnectedAt.IsZero() {
+			resp["connected_at"] = vp8Status.ConnectedAt.Format(time.RFC3339)
+		}
+		resp["last_error"] = vp8Status.LastError
+		resp["bytes_in"] = atomic.LoadInt64(&vp8Status.BytesIn)
+		resp["bytes_out"] = atomic.LoadInt64(&vp8Status.BytesOut)
+		vp8Status.RUnlock()
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(resp)
 
 	case http.MethodPost:
 		var req struct {
-			Enabled *bool `json:"enabled"`
+			Enabled      *bool   `json:"enabled"`
+			TelemostLink *string `json:"telemost_link"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
@@ -1040,6 +1069,9 @@ func apiVP8Config(w http.ResponseWriter, r *http.Request) {
 		cfg.mu.Lock()
 		if req.Enabled != nil {
 			cfg.VP8Enabled = *req.Enabled
+		}
+		if req.TelemostLink != nil {
+			cfg.TelemostLink = *req.TelemostLink
 		}
 		cfg.mu.Unlock()
 		cfg.Save()
@@ -1424,8 +1456,9 @@ func apiAppConfig(w http.ResponseWriter, r *http.Request) {
 
 	// Include VP8 transport status
 	cfg.mu.RLock()
-	if cfg.VP8Enabled {
+	if cfg.VP8Enabled && cfg.TelemostLink != "" {
 		appCfg["vp8_enabled"] = true
+		appCfg["telemost_link"] = cfg.TelemostLink
 	}
 	cfg.mu.RUnlock()
 
