@@ -269,6 +269,8 @@ func (c *Config) applyWireGuard() error {
 			exec.Command("wg-quick", "up", "wg0").Run()
 		}
 	}
+	// Ensure listen port is correct (syncconf can reset it)
+	exec.Command("wg", "set", "wg0", "listen-port", fmt.Sprintf("%d", c.WGPort)).Run()
 	return nil
 }
 

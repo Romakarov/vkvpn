@@ -16,7 +16,7 @@
   --red: #d7383b;
   --yellow: #feca57;
   --text: #e0e0e0;
-  --text2: #6a6a7a;
+  --text2: #9a9ab0;
   --input-bg: #201f1f;
 }
 * { margin:0; padding:0; box-sizing:border-box; }
@@ -186,7 +186,7 @@ input::placeholder { color: var(--text2); }
 .btn-primary:hover { background: #b8faff; box-shadow: 0 0 20px rgba(150,248,255,0.3); }
 .btn-danger { background: rgba(215,56,59,0.15); color: var(--red); border: 1px solid rgba(215,56,59,0.3); }
 .btn-danger:hover { background: rgba(215,56,59,0.25); }
-.btn-sm { padding: 6px 14px; font-size: 11px; }
+.btn-sm { padding: 6px 14px; font-size: 13px; }
 .btn-success { background: rgba(142,255,113,0.15); color: var(--green); border: 1px solid rgba(142,255,113,0.3); }
 .btn-success:hover { background: rgba(142,255,113,0.25); }
 .btn-magenta { background: var(--magenta); color: var(--bg); }
@@ -500,10 +500,11 @@ input::placeholder { color: var(--text2); }
 
 /* Subtitle / hint text */
 .hint-text {
-  font-size: 12px;
+  font-size: 13px;
   color: var(--text2);
   margin-bottom: 12px;
-  letter-spacing: 0.5px;
+  letter-spacing: 0.3px;
+  line-height: 1.5;
 }
 
 /* Links row styling */
@@ -520,6 +521,18 @@ input::placeholder { color: var(--text2); }
 </style>
 </head>
 <body>
+
+<!-- Login screen -->
+<div id="login-screen" style="display:flex;align-items:center;justify-content:center;min-height:100vh;background:#0e0e0e">
+  <div style="width:340px;padding:32px;background:#1a1919;border:1px solid rgba(150,248,255,0.2)">
+    <h1 style="font-size:20px;color:#96f8ff;letter-spacing:0.15em;text-align:center;margin-bottom:24px;font-family:monospace">VKVPN // LOGIN</h1>
+    <input id="login-pass" type="password" placeholder="ADMIN PASSWORD" style="width:100%;padding:12px;background:#0e0e0e;border:1px solid rgba(150,248,255,0.3);color:#96f8ff;font-family:monospace;font-size:14px;letter-spacing:0.1em;margin-bottom:12px;box-sizing:border-box">
+    <button onclick="tryLogin()" style="width:100%;padding:12px;background:transparent;border:2px solid #96f8ff;color:#96f8ff;font-family:monospace;font-size:14px;letter-spacing:0.15em;cursor:pointer;text-transform:uppercase">AUTHENTICATE</button>
+    <div id="login-error" style="color:#d7383b;font-family:monospace;font-size:12px;text-align:center;margin-top:12px;letter-spacing:0.1em"></div>
+  </div>
+</div>
+
+<div id="app-content" style="display:none">
 <div class="container">
   <h1>
     <div class="logo">V</div>
@@ -538,28 +551,6 @@ input::placeholder { color: var(--text2); }
     <div class="card">
       <h2>// Connected Clients</h2>
       <div id="client-count" class="stat">0 <small>linked</small></div>
-    </div>
-  </div>
-
-  <!-- Link management -->
-  <div class="card full mb-12" style="margin-bottom:16px">
-    <h2>// TURN Relay Links</h2>
-    <div class="section-line"></div>
-    <div id="links-list" style="margin-bottom:12px"></div>
-    <div class="inline-form">
-      <div class="form-group">
-        <label>New Link</label>
-        <input type="text" id="link-input" placeholder="https://vk.com/call/join/... or https://telemost.yandex.ru/j/...">
-      </div>
-      <div class="form-group" style="flex:0 0 120px">
-        <label>Type</label>
-        <select id="link-type">
-          <option value="">Auto</option>
-          <option value="vk">VK</option>
-          <option value="yandex" disabled>Yandex (N/A)</option>
-        </select>
-      </div>
-      <button class="btn btn-primary" onclick="setLink()" style="margin-bottom:0;align-self:flex-end">Add</button>
     </div>
   </div>
 
@@ -755,8 +746,49 @@ input::placeholder { color: var(--text2); }
 <script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.min.js"></script>
 <script>
 const API = '';
+let TOKEN = localStorage.getItem('vkvpn_token') || '';
 let currentConfigName = '';
 let lastLogId = 0;
+
+// Login screen
+function showLogin(msg) {
+  document.getElementById('app-content').style.display = 'none';
+  document.getElementById('login-screen').style.display = 'flex';
+  if (msg) document.getElementById('login-error').textContent = msg;
+}
+function tryLogin() {
+  const pass = document.getElementById('login-pass').value.trim();
+  if (!pass) return;
+  TOKEN = pass;
+  localStorage.setItem('vkvpn_token', TOKEN);
+  fetch(API + '/api/status?token=' + encodeURIComponent(TOKEN))
+    .then(r => { if (r.status === 401) throw new Error('wrong'); return r.json(); })
+    .then(() => {
+      document.getElementById('login-screen').style.display = 'none';
+      document.getElementById('app-content').style.display = 'block';
+      initApp();
+    })
+    .catch(() => {
+      localStorage.removeItem('vkvpn_token');
+      TOKEN = '';
+      document.getElementById('login-error').textContent = 'WRONG PASSWORD';
+    });
+}
+document.addEventListener('DOMContentLoaded', () => {
+  document.getElementById('login-pass').addEventListener('keydown', e => { if (e.key === 'Enter') tryLogin(); });
+  if (TOKEN) {
+    fetch(API + '/api/status?token=' + encodeURIComponent(TOKEN))
+      .then(r => { if (r.status === 401) throw new Error('expired'); return r.json(); })
+      .then(() => {
+        document.getElementById('login-screen').style.display = 'none';
+        document.getElementById('app-content').style.display = 'block';
+        initApp();
+      })
+      .catch(() => showLogin('SESSION EXPIRED'));
+  } else {
+    showLogin();
+  }
+});
 
 function toast(msg, type='success') {
   const t = document.createElement('div');
@@ -770,7 +802,8 @@ async function api(path, opts) {
   try {
     opts = opts || {};
     opts.credentials = 'same-origin';
-    const resp = await fetch(API + path, opts);
+    const sep = path.includes('?') ? '&' : '?';
+    const resp = await fetch(API + path + sep + 'token=' + encodeURIComponent(TOKEN), opts);
     if (resp.status === 401) {
       toast('Session expired — reload with token', 'error');
       throw new Error('unauthorized');
@@ -1135,13 +1168,28 @@ async function loadPoolStatus() {
 }
 
 async function addVKAccount() {
+  // Open VK auth - user copies token manually after login
+  const url = 'https://oauth.vk.com/authorize?client_id=6287487&scope=audio,video,offline&response_type=token&v=5.264&redirect_uri=https://oauth.vk.com/blank.html';
+  window.open(url, '_blank', 'width=600,height=700');
+  // Show token input prompt
+  const token = prompt('После авторизации в VK скопируй access_token из URL и вставь сюда:');
+  if (!token || !token.trim()) return;
+  let cleanToken = token.trim();
+  // Extract from URL if user pasted full URL
+  if (cleanToken.includes('access_token=')) {
+    const m = cleanToken.match(/access_token=([^&]+)/);
+    if (m) cleanToken = m[1];
+  }
   try {
-    const data = await api('/api/vk/auth-url');
-    if (data.url) {
-      window.open(data.url, '_blank', 'width=600,height=700');
-    }
+    await api('/api/vk/accounts/add-token', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({token: cleanToken})
+    });
+    toast('VK account added');
+    loadVKAccounts();
   } catch(e) {
-    alert('Failed to get auth URL: ' + e.message);
+    toast('Error: ' + e.message, 'error');
   }
 }
 
@@ -1341,21 +1389,23 @@ async function toggleVP8() {
   } catch(e) { toast('Error: ' + e.message, 'error'); }
 }
 
-// Init
-loadStatus();
-loadLinks();
-loadClients();
-loadMetrics();
-loadLogs();
-loadVKAccounts();
-loadVP8Status();
-setInterval(loadLogs, 3000);
-setInterval(loadStatus, 10000);
-setInterval(loadLinks, 15000);
-setInterval(loadMetrics, 15000);
-setInterval(loadVKAccounts, 30000);
-setInterval(loadPoolStatus, 30000);
-setInterval(loadVP8Status, 10000);
+function initApp() {
+  loadStatus();
+  loadLinks();
+  loadClients();
+  loadMetrics();
+  loadLogs();
+  loadVKAccounts();
+  loadVP8Status();
+  setInterval(loadLogs, 3000);
+  setInterval(loadStatus, 10000);
+  setInterval(loadLinks, 15000);
+  setInterval(loadMetrics, 15000);
+  setInterval(loadVKAccounts, 30000);
+  setInterval(loadPoolStatus, 30000);
+  setInterval(loadVP8Status, 10000);
+}
 </script>
+</div><!-- /app-content -->
 </body>
 </html>

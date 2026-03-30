@@ -549,7 +549,7 @@ func Start(tunFd int, peerAddr, vkLink, yandexLink string, connections int, wgPr
 			return serverTurnCreds.user, serverTurnCreds.pass, serverTurnCreds.addr, nil
 		}
 		if connections <= 0 {
-			connections = 1
+			connections = 8
 		}
 	} else if vkLink != "" {
 		parts := strings.Split(vkLink, "join/")
