@@ -266,8 +266,13 @@ class MainActivity : AppCompatActivity() {
         }
 
         val turnAddress = prefs.getString("turn_address", "") ?: ""
-        if (link.isEmpty() && turnAddress.isEmpty()) {
+        val telemostLink = prefs.getString("telemost_link", "") ?: ""
+        if (selectedProtocol != "vp8" && link.isEmpty() && turnAddress.isEmpty()) {
             Toast.makeText(this, "NO TURN CREDENTIALS. CONFIGURE VK TOKEN ON SERVER.", Toast.LENGTH_LONG).show()
+            return
+        }
+        if (selectedProtocol == "vp8" && telemostLink.isEmpty()) {
+            Toast.makeText(this, "NO TELEMOST LINK. RE-IMPORT CONFIG FROM SERVER.", Toast.LENGTH_LONG).show()
             return
         }
 
