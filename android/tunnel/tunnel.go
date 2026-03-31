@@ -341,11 +341,9 @@ func StartVP8(tunFd int, telemostLink, wgPrivKey, serverPubKey, wgAddress, wgDNS
 
 // runVP8Tunnel runs the VP8/Telemost tunnel loop.
 func runVP8Tunnel(ctx context.Context, tunFd int, telemostLink, wgPrivKey, serverPubKey, wgAddress, wgDNS string) error {
-	// Create WireGuard device the same way as TURN mode
-	tunDev, err := tun.CreateTUNFromFile(os.NewFile(uintptr(tunFd), "/dev/tun"), 0)
-	if err != nil {
-		return fmt.Errorf("create TUN: %w", err)
-	}
+	// Use Android-specific TUN wrapper (same as TURN mode) — tun.CreateTUNFromFile
+	// does not work on Android because it expects Linux TUN semantics.
+	tunDev := newAndroidTUN(tunFd, 1280)
 
 	// Listen on local UDP for WireGuard
 	listenConn, err := net.ListenPacket("udp", "127.0.0.1:0")
@@ -357,15 +355,22 @@ func runVP8Tunnel(ctx context.Context, tunFd int, telemostLink, wgPrivKey, serve
 	localAddr := listenConn.LocalAddr().String()
 	logMsg("[VP8] WireGuard endpoint: %s", localAddr)
 
-	// Create WireGuard device
-	wgConf := fmt.Sprintf(`private_key=%s
-public_key=%s
-endpoint=%s
-allowed_ip=0.0.0.0/0
-persistent_keepalive_interval=25
-`, hexKey(wgPrivKey), hexKey(serverPubKey), localAddr)
+	// Decode keys
+	privBytes, err := base64.StdEncoding.DecodeString(wgPrivKey)
+	if err != nil || len(privBytes) != 32 {
+		return fmt.Errorf("invalid WG private key")
+	}
+	pubBytes, err := base64.StdEncoding.DecodeString(serverPubKey)
+	if err != nil || len(pubBytes) != 32 {
+		return fmt.Errorf("invalid WG public key")
+	}
 
-	dev := device.NewDevice(tunDev, conn.NewDefaultBind(), device.NewLogger(device.LogLevelSilent, ""))
+	wgConf := fmt.Sprintf(
+		"private_key=%s\npublic_key=%s\nendpoint=%s\nallowed_ip=0.0.0.0/0\npersistent_keepalive_interval=25\n",
+		hex.EncodeToString(privBytes), hex.EncodeToString(pubBytes), localAddr,
+	)
+
+	dev := device.NewDevice(tunDev, conn.NewDefaultBind(), device.NewLogger(device.LogLevelError, "wg-vp8: "))
 	if err := dev.IpcSet(wgConf); err != nil {
 		dev.Close()
 		return fmt.Errorf("WG config: %w", err)
