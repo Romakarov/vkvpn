@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 	"sync"
@@ -36,10 +37,13 @@ type conferenceInfo struct {
 func fetchConferenceInfo(ctx context.Context, confID string) (*conferenceInfo, error) {
 	path := fmt.Sprintf("/telemost_front/v2/telemost/conferences/https%%3A%%2F%%2Ftelemost.yandex.ru%%2Fj%%2F%s/connection?next_gen_media_platform_allowed=false", confID)
 
+	fullURL := confBaseURL + path
+	log.Printf("[telemost] Conference API: GET %s", fullURL)
+
 	client := &http.Client{Timeout: 30 * time.Second}
 	defer client.CloseIdleConnections()
 
-	req, err := http.NewRequestWithContext(ctx, "GET", confBaseURL+path, nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", fullURL, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -54,6 +58,7 @@ func fetchConferenceInfo(ctx context.Context, confID string) (*conferenceInfo, e
 		return nil, fmt.Errorf("conference API: %w", err)
 	}
 	defer resp.Body.Close()
+	log.Printf("[telemost] Conference API response: status=%s", resp.Status)
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
 		return nil, fmt.Errorf("conference API: status=%s body=%s", resp.Status, string(body))
@@ -87,6 +92,8 @@ type sfuConn struct {
 
 // connectSFU establishes a WebSocket to the SFU media server and sends the hello.
 func connectSFU(ctx context.Context, info *conferenceInfo) (*sfuConn, []iceServerConfig, error) {
+	log.Printf("[telemost] SFU: connecting to %s", info.MediaURL)
+
 	h := http.Header{}
 	h.Set("Origin", "https://telemost.yandex.ru")
 	h.Set("User-Agent", userAgent)
@@ -112,6 +119,7 @@ func connectSFU(ctx context.Context, info *conferenceInfo) (*sfuConn, []iceServe
 		ws.Close()
 		return nil, nil, fmt.Errorf("SFU hello: %w", err)
 	}
+	log.Printf("[telemost] SFU: hello sent (peer=%s room=%s)", info.PeerID, info.RoomID)
 
 	// Read until we get serverHello with ICE servers
 	ws.SetReadDeadline(time.Now().Add(15 * time.Second))
@@ -147,6 +155,10 @@ func connectSFU(ctx context.Context, info *conferenceInfo) (*sfuConn, []iceServe
 			ice := serverHello.ServerHello.RtcConfiguration.IceServers
 			if len(ice) > 0 {
 				ws.SetReadDeadline(time.Time{}) // clear deadline
+				// Log ICE servers
+				for i, s := range ice {
+					log.Printf("[telemost] SFU: ICE server[%d]: urls=%v user=%s", i, []string(s.URLs), s.Username)
+				}
 				// Send ack echoing the serverHello uid (required by Yandex SFU)
 				sfu.writeJSON(map[string]interface{}{
 					"uid": serverHello.UID,
@@ -157,6 +169,9 @@ func connectSFU(ctx context.Context, info *conferenceInfo) (*sfuConn, []iceServe
 				return sfu, ice, nil
 			}
 		}
+
+		// Log unknown non-ack messages during handshake
+		log.Printf("[telemost] SFU handshake: unknown msg (len=%d)", len(msg))
 	}
 }
 

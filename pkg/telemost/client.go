@@ -11,6 +11,9 @@ import (
 
 	"github.com/Romakarov/vkvpn/pkg/vp8tunnel"
 	"github.com/google/uuid"
+	"github.com/pion/rtcp"
+	"github.com/pion/rtp"
+	"github.com/pion/rtp/codecs"
 	"github.com/pion/webrtc/v4"
 	"github.com/pion/webrtc/v4/pkg/media"
 )
@@ -81,23 +84,11 @@ func (c *Client) JoinCall(ctx context.Context, confLink string) error {
 		return fmt.Errorf("create publisher: %w", err)
 	}
 
-	// Step 5: Send setSlots — tells SFU we want to receive 1 video slot
-	// (without this, SFU never sends subscriberSdpOffer)
-	slots := make([]map[string]interface{}, 1)
-	slots[0] = map[string]interface{}{"width": 256, "height": 144}
-	c.sfu.writeJSON(map[string]interface{}{
-		"uid": uuid.New().String(),
-		"setSlots": map[string]interface{}{
-			"slots":              slots,
-			"audioSlotsCount":    0,
-			"gridConfig":         map[string]interface{}{},
-			"key":                1,
-			"selfViewVisibility": "ON_LOADING_THEN_SHOW",
-			"shutdownAllVideo":   nil,
-			"withSelfView":       false,
-		},
-	})
-	c.logger.Printf("[telemost] Sent setSlots (1 video slot)")
+	// Step 5: Request subscription to other participants' media.
+	// Send setSlots to tell SFU we want to receive 1 video + 1 audio slot.
+	// Also request initialSubscriberOffer via capabilitiesOffer in hello.
+	c.sendSetSlots(1)
+	c.logger.Printf("[telemost] Sent setSlots")
 
 	// Step 6: Process SFU messages (SDP offers/answers, ICE candidates)
 	c.logger.Printf("[telemost] Processing SFU signaling...")
@@ -143,11 +134,17 @@ func (c *Client) createPublisher(ctx context.Context, iceServers []webrtc.ICESer
 
 	// Create VP8 tunnel and wire it to the track
 	tunnel := vp8tunnel.New()
+	var writeCount uint64
 	tunnel.SendFrame = func(data []byte, duration time.Duration) error {
-		return videoTrack.WriteSample(media.Sample{
+		err := videoTrack.WriteSample(media.Sample{
 			Data:     data,
 			Duration: duration,
 		})
+		writeCount++
+		if writeCount <= 10 || writeCount%500 == 0 {
+			c.logger.Printf("[telemost] WriteSample #%d: size=%d first=0x%02x err=%v", writeCount, len(data), data[0], err)
+		}
+		return err
 	}
 	tunnel.Start(vp8tunnel.DefaultFPS)
 	c.tunnel = tunnel
@@ -157,6 +154,22 @@ func (c *Client) createPublisher(ctx context.Context, iceServers []webrtc.ICESer
 		c.logger.Printf("[telemost] Publisher state: %s", state)
 		if state == webrtc.PeerConnectionStateConnected {
 			c.logger.Printf("[telemost] VP8 tunnel ESTABLISHED")
+
+			// After publisher connects, re-send setSlots with incremented key
+			// to force SFU to re-evaluate video slot allocation.
+			go func() {
+				time.Sleep(500 * time.Millisecond)
+				c.logger.Printf("[telemost] Re-sending setSlots (key=2) after publisher connected")
+				c.sendSetSlots(2)
+
+				// Also try requesting keyframe via SFU signaling
+				time.Sleep(500 * time.Millisecond)
+				c.sfu.writeJSON(map[string]interface{}{
+					"uid": uuid.New().String(),
+					"requestKeyframe": map[string]interface{}{},
+				})
+			}()
+
 			if c.OnTunnel != nil {
 				go c.OnTunnel(tunnel)
 			}
@@ -220,6 +233,26 @@ func (c *Client) createSubscriber(iceServers []webrtc.ICEServer, sdpOffer string
 
 	pc.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
 		c.logger.Printf("[telemost] Subscriber state: %s", state)
+		if state == webrtc.PeerConnectionStateConnected {
+			// Send periodic PLI (Picture Loss Indication) to request video keyframes from SFU.
+			// Some SFUs don't forward video until the subscriber explicitly requests it.
+			go func() {
+				for i := 0; i < 10; i++ {
+					time.Sleep(1 * time.Second)
+					for _, receiver := range pc.GetReceivers() {
+						if receiver.Track() != nil && strings.Contains(strings.ToLower(receiver.Track().Codec().MimeType), "video") {
+							ssrc := receiver.Track().SSRC()
+							c.logger.Printf("[telemost] Sending PLI for video SSRC=%d", ssrc)
+							pc.WriteRTCP([]rtcp.Packet{
+								&rtcp.PictureLossIndication{
+									MediaSSRC: uint32(ssrc),
+								},
+							})
+						}
+					}
+				}
+			}()
+		}
 	})
 
 	// Trickle ICE for subscriber
@@ -256,9 +289,13 @@ func (c *Client) createSubscriber(iceServers []webrtc.ICEServer, sdpOffer string
 	})
 }
 
-// readIncomingTrack reads VP8 frames from the remote track and feeds them to the tunnel.
+// readIncomingTrack reads VP8 frames from the remote track, depacketizes RTP,
+// strips VP8 payload descriptors, reassembles frames, and feeds them to the tunnel.
 func (c *Client) readIncomingTrack(track *webrtc.TrackRemote) {
-	buf := make([]byte, 1600)
+	buf := make([]byte, 65535)
+	var frameBuf []byte
+	var rtpCount, frameCount, dataCount uint64
+
 	for {
 		select {
 		case <-c.done:
@@ -270,8 +307,56 @@ func (c *Client) readIncomingTrack(track *webrtc.TrackRemote) {
 			c.logger.Printf("[telemost] Track read error: %s", err)
 			return
 		}
-		if c.tunnel != nil {
-			c.tunnel.HandleIncomingFrame(buf[:n])
+
+		// 1. Parse RTP packet
+		pkt := &rtp.Packet{}
+		if err := pkt.Unmarshal(buf[:n]); err != nil {
+			c.logger.Printf("[telemost] RTP unmarshal error: %s", err)
+			continue
+		}
+
+		rtpCount++
+		if rtpCount <= 5 || rtpCount%500 == 0 {
+			c.logger.Printf("[telemost] RTP #%d: size=%d payloadLen=%d marker=%v ssrc=%d",
+				rtpCount, n, len(pkt.Payload), pkt.Marker, pkt.SSRC)
+		}
+
+		// 2. Strip VP8 RTP payload descriptor
+		vp8Pkt := &codecs.VP8Packet{}
+		payload, err := vp8Pkt.Unmarshal(pkt.Payload)
+		if err != nil || len(payload) == 0 {
+			continue
+		}
+
+		// 3. Frame reassembly: S=1 starts new frame, Marker=true ends frame
+		if vp8Pkt.S == 1 {
+			frameBuf = make([]byte, 0, 2048)
+		}
+		if frameBuf != nil {
+			frameBuf = append(frameBuf, payload...)
+		}
+
+		if pkt.Marker && frameBuf != nil {
+			frameCount++
+			if frameCount <= 5 || frameCount%100 == 0 {
+				first := byte(0)
+				if len(frameBuf) > 0 {
+					first = frameBuf[0]
+				}
+				c.logger.Printf("[telemost] Frame #%d: size=%d first=0x%02x (rtpPkts=%d)",
+					frameCount, len(frameBuf), first, rtpCount)
+			}
+
+			if c.tunnel != nil {
+				if len(frameBuf) > 0 && frameBuf[0] == vp8tunnel.DataFrameMarker {
+					dataCount++
+					if dataCount <= 5 || dataCount%100 == 0 {
+						c.logger.Printf("[telemost] DATA frame #%d: size=%d", dataCount, len(frameBuf))
+					}
+				}
+				c.tunnel.HandleIncomingFrame(frameBuf)
+			}
+			frameBuf = nil
 		}
 	}
 }
@@ -341,26 +426,40 @@ func (c *Client) processSFUMessages(ctx context.Context) error {
 				SDP string `json:"sdp"`
 			}
 			if json.Unmarshal(raw, &offer) == nil && offer.SDP != "" {
-				c.logger.Printf("[telemost] Got sub offer from SFU")
+				// Log video/audio m-lines with direction and SSRC info
+				videoLines, audioLines := 0, 0
+				var currentMedia string
+				var videoDetails []string
+				for _, line := range strings.Split(offer.SDP, "\r\n") {
+					if strings.HasPrefix(line, "m=video") {
+						videoLines++
+						currentMedia = "video"
+						videoDetails = append(videoDetails, fmt.Sprintf("  m-line %d: %s", videoLines, line))
+					} else if strings.HasPrefix(line, "m=audio") {
+						audioLines++
+						currentMedia = "audio"
+					}
+					if currentMedia == "video" {
+						if strings.HasPrefix(line, "a=sendrecv") || strings.HasPrefix(line, "a=recvonly") ||
+							strings.HasPrefix(line, "a=sendonly") || strings.HasPrefix(line, "a=inactive") {
+							videoDetails = append(videoDetails, fmt.Sprintf("    direction: %s", line))
+						}
+						if strings.HasPrefix(line, "a=ssrc:") {
+							videoDetails = append(videoDetails, fmt.Sprintf("    %s", line))
+						}
+						if strings.HasPrefix(line, "a=mid:") {
+							videoDetails = append(videoDetails, fmt.Sprintf("    %s", line))
+						}
+					}
+				}
+				c.logger.Printf("[telemost] Got sub offer from SFU (audio=%d video=%d m-lines)", audioLines, videoLines)
+				for _, d := range videoDetails {
+					c.logger.Printf("[telemost] Sub SDP %s", d)
+				}
 				if c.subPC == nil && c.pubPC != nil {
 					c.createSubscriber(c.iceServers, offer.SDP)
 				}
 			}
-			sendAck()
-		}
-
-		// Ack all other SFU messages (updateDescription, vadActivity, slotsConfig, etc.)
-		if _, ok := envelope["updateDescription"]; ok {
-			sendAck()
-		} else if _, ok := envelope["vadActivity"]; ok {
-			sendAck()
-		} else if _, ok := envelope["slotsConfig"]; ok {
-			sendAck()
-		} else if _, ok := envelope["slotsMeta"]; ok {
-			sendAck()
-		} else if _, ok := envelope["upsertDescription"]; ok {
-			sendAck()
-		} else if _, ok := envelope["removeDescription"]; ok {
 			sendAck()
 		}
 
@@ -373,6 +472,7 @@ func (c *Client) processSFUMessages(ctx context.Context) error {
 				Target        string `json:"target"`
 			}
 			if json.Unmarshal(raw, &cand) == nil && cand.Candidate != "" {
+				c.logger.Printf("[telemost] ICE candidate from SFU: target=%s", cand.Target)
 				ice := webrtc.ICECandidateInit{
 					Candidate: cand.Candidate,
 					SDPMid:    &cand.SDPMid,
@@ -384,11 +484,65 @@ func (c *Client) processSFUMessages(ctx context.Context) error {
 				}
 			}
 			sendAck()
+			continue
 		}
+
+		// Log detailed content of key SFU messages for debugging
+		if raw, ok := envelope["slotsConfig"]; ok {
+			c.logger.Printf("[telemost] slotsConfig: %s", truncateJSON(raw, 500))
+		}
+		if raw, ok := envelope["upsertDescription"]; ok {
+			c.logger.Printf("[telemost] upsertDescription: %s", truncateJSON(raw, 500))
+		}
+		if raw, ok := envelope["updateDescription"]; ok {
+			c.logger.Printf("[telemost] updateDescription: %s", truncateJSON(raw, 500))
+		}
+
+		// Ack ALL other SFU messages with uid (catch-all for unknown types).
+		msgType := "unknown"
+		for key := range envelope {
+			if key != "uid" {
+				msgType = key
+				break
+			}
+		}
+		c.logger.Printf("[telemost] SFU msg: %s (uid=%s)", msgType, msgUID)
+		sendAck()
 	}
 }
 
 // sendICECandidate sends an ICE candidate to the SFU using Yandex format.
+// sendSetSlots tells the SFU we want to receive video/audio from other participants.
+// Format reverse-engineered from Telemost SDK browser traffic.
+func (c *Client) sendSetSlots(key int) {
+	if c.sfu == nil {
+		return
+	}
+	// Telemost SDK sends 12 slots with varying resolutions for the grid layout.
+	// We replicate this exactly to match expected behavior.
+	slots := make([]map[string]interface{}, 12)
+	for i := 0; i < 8; i++ {
+		slots[i] = map[string]interface{}{"width": 368, "height": 207}
+	}
+	slots[8] = map[string]interface{}{"width": 320, "height": 180}
+	slots[9] = map[string]interface{}{"width": 320, "height": 180}
+	slots[10] = map[string]interface{}{"width": 256, "height": 144}
+	slots[11] = map[string]interface{}{"width": 256, "height": 144}
+
+	c.sfu.writeJSON(map[string]interface{}{
+		"uid": uuid.New().String(),
+		"setSlots": map[string]interface{}{
+			"slots":              slots,
+			"audioSlotsCount":    0,
+			"gridConfig":         map[string]interface{}{},
+			"key":                key,
+			"selfViewVisibility": "ON_LOADING_THEN_SHOW",
+			"shutdownAllVideo":   nil,
+			"withSelfView":       true,
+		},
+	})
+}
+
 func (c *Client) sendICECandidate(target string, candidate *webrtc.ICECandidate) {
 	if c.sfu == nil {
 		return
@@ -436,6 +590,15 @@ func (c *Client) Close() {
 	if c.sfu != nil {
 		c.sfu.close()
 	}
+}
+
+// truncateJSON returns a JSON string truncated to maxLen bytes.
+func truncateJSON(raw json.RawMessage, maxLen int) string {
+	s := string(raw)
+	if len(s) > maxLen {
+		return s[:maxLen] + "..."
+	}
+	return s
 }
 
 // toPionICEServers converts Telemost ICE server configs to Pion format.

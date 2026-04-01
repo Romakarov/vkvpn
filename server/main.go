@@ -780,6 +780,8 @@ func bridgeVP8ToWG(tunnel *vp8tunnel.Tunnel, wgAddr string) {
 	var wg sync.WaitGroup
 	wg.Add(2)
 
+	var vp8ToWG, wgToVP8 int64
+
 	// VP8 → WG
 	go func() {
 		defer wg.Done()
@@ -787,9 +789,15 @@ func bridgeVP8ToWG(tunnel *vp8tunnel.Tunnel, wgAddr string) {
 		for {
 			n, _, err := pconn.ReadFrom(buf)
 			if err != nil {
+				logger.Printf("VP8→WG: read error: %s", err)
 				return
 			}
+			vp8ToWG++
+			if vp8ToWG <= 5 || vp8ToWG%500 == 0 {
+				logger.Printf("VP8→WG: pkt #%d size=%d", vp8ToWG, n)
+			}
 			if _, err = wgConn.Write(buf[:n]); err != nil {
+				logger.Printf("VP8→WG: write error: %s", err)
 				return
 			}
 		}
@@ -803,16 +811,22 @@ func bridgeVP8ToWG(tunnel *vp8tunnel.Tunnel, wgAddr string) {
 			wgConn.SetReadDeadline(time.Now().Add(30 * time.Minute))
 			n, err := wgConn.Read(buf)
 			if err != nil {
+				logger.Printf("WG→VP8: read error: %s", err)
 				return
 			}
+			wgToVP8++
+			if wgToVP8 <= 5 || wgToVP8%500 == 0 {
+				logger.Printf("WG→VP8: pkt #%d size=%d", wgToVP8, n)
+			}
 			if _, err = pconn.WriteTo(buf[:n], nil); err != nil {
+				logger.Printf("WG→VP8: write error: %s", err)
 				return
 			}
 		}
 	}()
 
 	wg.Wait()
-	logger.Printf("VP8 bridge closed")
+	logger.Printf("VP8 bridge closed (VP8→WG: %d pkts, WG→VP8: %d pkts)", vp8ToWG, wgToVP8)
 }
 
 // ─── Web API handlers ───

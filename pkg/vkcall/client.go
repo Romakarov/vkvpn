@@ -16,6 +16,8 @@ import (
 
 	"github.com/Romakarov/vkvpn/pkg/turnauth"
 	"github.com/Romakarov/vkvpn/pkg/vp8tunnel"
+	"github.com/pion/rtp"
+	"github.com/pion/rtp/codecs"
 	"github.com/pion/webrtc/v4"
 	"github.com/pion/webrtc/v4/pkg/media"
 )
@@ -277,8 +279,13 @@ func (c *Client) JoinLink(ctx context.Context, joinHash string) error {
 	}
 }
 
+// readIncomingTrack reads VP8 frames from the remote track, depacketizes RTP,
+// strips VP8 payload descriptors, reassembles frames, and feeds them to the tunnel.
 func (c *Client) readIncomingTrack(track *webrtc.TrackRemote) {
-	buf := make([]byte, 1600)
+	buf := make([]byte, 65535)
+	var frameBuf []byte
+	var rtpCount, frameCount uint64
+
 	for {
 		select {
 		case <-c.done:
@@ -287,10 +294,50 @@ func (c *Client) readIncomingTrack(track *webrtc.TrackRemote) {
 		}
 		n, _, err := track.Read(buf)
 		if err != nil {
+			c.logger.Printf("[vkcall] Track read error: %s", err)
 			return
 		}
-		if c.tunnel != nil {
-			c.tunnel.HandleIncomingFrame(buf[:n])
+
+		// 1. Parse RTP packet
+		pkt := &rtp.Packet{}
+		if err := pkt.Unmarshal(buf[:n]); err != nil {
+			continue
+		}
+
+		rtpCount++
+		if rtpCount <= 5 || rtpCount%500 == 0 {
+			c.logger.Printf("[vkcall] RTP #%d: size=%d payloadLen=%d marker=%v",
+				rtpCount, n, len(pkt.Payload), pkt.Marker)
+		}
+
+		// 2. Strip VP8 RTP payload descriptor
+		vp8Pkt := &codecs.VP8Packet{}
+		payload, err := vp8Pkt.Unmarshal(pkt.Payload)
+		if err != nil || len(payload) == 0 {
+			continue
+		}
+
+		// 3. Frame reassembly: S=1 starts new frame, Marker=true ends frame
+		if vp8Pkt.S == 1 {
+			frameBuf = make([]byte, 0, 2048)
+		}
+		if frameBuf != nil {
+			frameBuf = append(frameBuf, payload...)
+		}
+
+		if pkt.Marker && frameBuf != nil {
+			frameCount++
+			if frameCount <= 5 || frameCount%100 == 0 {
+				first := byte(0)
+				if len(frameBuf) > 0 {
+					first = frameBuf[0]
+				}
+				c.logger.Printf("[vkcall] Frame #%d: size=%d first=0x%02x", frameCount, len(frameBuf), first)
+			}
+			if c.tunnel != nil {
+				c.tunnel.HandleIncomingFrame(frameBuf)
+			}
+			frameBuf = nil
 		}
 	}
 }
