@@ -40,28 +40,20 @@ func (c *PacketConn) ReadFrom(p []byte) (n int, addr net.Addr, err error) {
 }
 
 // WriteTo sends data through the VP8 tunnel.
+// Packets must fit within MaxPayloadSize — fragmentation is not supported
+// because the receiver has no reassembly and WireGuard requires intact packets.
+// Oversized packets are silently dropped (not an error) to avoid killing the bridge.
+// This should not happen in practice if the WG TUN MTU is set correctly (≤1000).
 func (c *PacketConn) WriteTo(p []byte, addr net.Addr) (n int, err error) {
-	// Fragment if payload exceeds MaxPayloadSize
-	if len(p) <= MaxPayloadSize {
-		if err := c.tunnel.Send(p); err != nil {
-			return 0, err
-		}
+	if len(p) > MaxPayloadSize {
+		// Drop oversized packet — WireGuard MTU should be set low enough to prevent this.
+		// Returning success avoids killing the bridge on a single oversized packet.
 		return len(p), nil
 	}
-
-	// Fragment large packets
-	sent := 0
-	for sent < len(p) {
-		end := sent + MaxPayloadSize
-		if end > len(p) {
-			end = len(p)
-		}
-		if err := c.tunnel.Send(p[sent:end]); err != nil {
-			return sent, err
-		}
-		sent = end
+	if err := c.tunnel.Send(p); err != nil {
+		return 0, err
 	}
-	return sent, nil
+	return len(p), nil
 }
 
 // Close closes the underlying tunnel.

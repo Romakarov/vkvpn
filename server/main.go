@@ -15,8 +15,6 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"math/big"
-	mrand "math/rand"
-
 	"regexp"
 
 	"golang.org/x/crypto/bcrypt"
@@ -241,6 +239,10 @@ func (c *Config) applyWireGuard() error {
 	sb.WriteString(fmt.Sprintf("PrivateKey = %s\n", c.ServerPriv))
 	sb.WriteString(fmt.Sprintf("Address = %s\n", strings.Replace(c.WGSubnet, ".0/", ".1/", 1)))
 	sb.WriteString(fmt.Sprintf("ListenPort = %d\n", c.WGPort))
+	// MTU=1000: required for VP8 transport. VP8 tunnel max payload=1100, WG overhead=48,
+	// so inner IP MTU must be ≤1052. 1000 gives safe headroom.
+	// TURN transport is unaffected (DTLS frames don't have a strict size limit).
+	sb.WriteString("MTU = 1000\n")
 	sb.WriteString(fmt.Sprintf("PostUp = iptables -A FORWARD -i wg0 -j ACCEPT; iptables -t nat -A POSTROUTING -o %s -j MASQUERADE\n", iface))
 	sb.WriteString(fmt.Sprintf("PostDown = iptables -D FORWARD -i wg0 -j ACCEPT; iptables -t nat -D POSTROUTING -o %s -j MASQUERADE\n", iface))
 	sb.WriteString("\n")
@@ -1890,6 +1892,60 @@ func apiVKAddToken(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{"status": "ok", "id": account.ID})
 }
 
+// apiTurnCreds returns fresh TURN credentials for a client.
+// Called by Android app at connect time — no auth required (client name is not secret).
+// If no active call exists, triggers a new VK call to get fresh credentials.
+func apiTurnCreds(w http.ResponseWriter, r *http.Request) {
+	name := r.URL.Query().Get("name")
+	if name == "" {
+		http.Error(w, "name required", http.StatusBadRequest)
+		return
+	}
+
+	// Verify client exists and is enabled
+	cfg.mu.RLock()
+	var found bool
+	for _, cl := range cfg.Clients {
+		if cl.Name == name && cl.Enabled {
+			found = true
+			break
+		}
+	}
+	cfg.mu.RUnlock()
+	if !found {
+		http.Error(w, "client not found or disabled", http.StatusNotFound)
+		return
+	}
+
+	// Try to get existing credentials from pool
+	if user, pass, addr, ok := credPool.GetOrAssignCreds(name); ok {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{
+			"turn_username": user,
+			"turn_password": pass,
+			"turn_address":  addr,
+		})
+		return
+	}
+
+	// No active call — trigger a new one
+	runSchedulerTick()
+
+	// Try again after scheduler tick
+	if user, pass, addr, ok := credPool.GetOrAssignCreds(name); ok {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{
+			"turn_username": user,
+			"turn_password": pass,
+			"turn_address":  addr,
+		})
+		return
+	}
+
+	// Still nothing — no VK accounts available
+	http.Error(w, "no TURN credentials available (no VK accounts?)", http.StatusServiceUnavailable)
+}
+
 // apiVKCredentials returns the current cached TURN credentials (debug)
 func apiVKCredentials(w http.ResponseWriter, r *http.Request) {
 	turnCredsCache.RLock()
@@ -2140,15 +2196,13 @@ func startCallForAccount(account *VKAccount) error {
 		return err
 	}
 
-	// Success — get pool config for call duration
-	cfg.mu.RLock()
-	pc := cfg.Pool
-	cfg.mu.RUnlock()
-	if pc.MinCallMinutes == 0 {
-		pc = defaultPoolConfig()
-	}
-
-	callDuration := time.Duration(pc.MinCallMinutes+mrand.Intn(max(1, pc.MaxCallMinutes-pc.MinCallMinutes))) * time.Minute
+	// TURN credentials from VK are HMAC-based and live ~24 hours.
+	// We keep the call alive for 23 hours (not 1-3h rotation) because:
+	//   - Android clients import credentials once and use them until reconnect
+	//   - Rotating the call every 1-3h invalidates the TURN allocation,
+	//     which kills all connected clients
+	//   - VK doesn't actually keep the call alive — only the credentials matter
+	callDuration := 23 * time.Hour
 	expiresAt := time.Now().Add(callDuration)
 
 	// Add to credential pool
@@ -2225,15 +2279,14 @@ func runSchedulerTick() {
 
 	for _, accID := range expiredCalls {
 		orphans := credPool.EndCall(accID)
-		logger.Printf("Call ended for account %s, %d clients orphaned", accID, len(orphans))
+		logger.Printf("Call credentials expired for account %s (23h), %d clients orphaned — new call will start", accID, len(orphans))
 
-		// Set account to cooldown with random break
-		breakDuration := time.Duration(pc.MinBreakMinutes+mrand.Intn(max(1, pc.MaxBreakMinutes-pc.MinBreakMinutes))) * time.Minute
+		// No cooldown — immediately eligible for a new call in Phase 3
 		cfg.mu.Lock()
 		for i, a := range cfg.VKAccounts {
 			if a.ID == accID {
-				cfg.VKAccounts[i].Status = "cooldown"
-				cfg.VKAccounts[i].NextCallAt = now.Add(breakDuration).Unix()
+				cfg.VKAccounts[i].Status = "idle"
+				cfg.VKAccounts[i].NextCallAt = 0
 				break
 			}
 		}
@@ -2263,8 +2316,8 @@ func runSchedulerTick() {
 		if alreadyCalling {
 			continue
 		}
-		// Skip accounts at daily limit
-		if acc.CallsToday >= pc.MaxCallsPerDay {
+		// Skip accounts at daily limit (with 23h calls, limit is effectively 2/day)
+		if acc.CallsToday >= max(pc.MaxCallsPerDay, 2) {
 			continue
 		}
 		// Skip accounts in cooldown/rate_limited that aren't ready yet
@@ -2681,11 +2734,15 @@ func main() {
 	go runDTLSServer(ctx, *dtlsAddr, *wgConnect)
 
 	// Start VP8 server (secondary transport: data inside VK Call video stream)
+	// Delay to ensure DTLS listener binds port 56000 first (Pion ICE can grab it)
 	cfg.mu.RLock()
 	vp8On := cfg.VP8Enabled
 	cfg.mu.RUnlock()
 	if vp8On {
-		go runVP8Server(ctx, *wgConnect)
+		go func() {
+			time.Sleep(2 * time.Second)
+			runVP8Server(ctx, *wgConnect)
+		}()
 	}
 
 	// Start background TURN credential manager
@@ -2718,6 +2775,7 @@ func main() {
 	mux.HandleFunc("/api/vk/accounts", authMiddleware(apiVKAccounts))
 	mux.HandleFunc("/api/vk/accounts/delete", authMiddleware(apiVKDeleteAccount))
 	mux.HandleFunc("/api/vk/accounts/add-token", authMiddleware(apiVKAddToken))
+	mux.HandleFunc("/api/turn-creds", apiTurnCreds) // no auth — called by Android at connect time
 	mux.HandleFunc("/api/vk/credentials", authMiddleware(apiVKCredentials))
 	mux.HandleFunc("/api/vk/credentials/refresh", authMiddleware(apiVKRefreshCreds))
 	mux.HandleFunc("/api/vk/accounts/bulk-add", authMiddleware(apiVKBulkAddTokens))

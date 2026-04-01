@@ -309,6 +309,7 @@ class MainActivity : AppCompatActivity() {
             putExtra("turn_address", prefs.getString("turn_address", ""))
             putExtra("protocol", selectedProtocol)
             putExtra("telemost_link", prefs.getString("telemost_link", ""))
+            putExtra("client_name", prefs.getString("name", ""))
         }
         startForegroundService(intent)
 

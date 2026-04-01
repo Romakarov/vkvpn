@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Romakarov/vkvpn/pkg/vp8tunnel"
+	"github.com/google/uuid"
 	"github.com/pion/webrtc/v4"
 	"github.com/pion/webrtc/v4/pkg/media"
 )
@@ -24,9 +25,10 @@ type Client struct {
 	// subPC receives VP8 "video" from the other participant.
 	subPC *webrtc.PeerConnection
 
-	sfu     *sfuConn
-	tunnel  *vp8tunnel.Tunnel
-	confID  string
+	sfu        *sfuConn
+	tunnel     *vp8tunnel.Tunnel
+	confID     string
+	iceServers []webrtc.ICEServer
 
 	mu     sync.Mutex
 	closed bool
@@ -71,15 +73,33 @@ func (c *Client) JoinCall(ctx context.Context, confLink string) error {
 
 	c.logger.Printf("[telemost] Connected to SFU, got %d ICE servers", len(iceServers))
 
-	// Step 3: Convert ICE servers to Pion format
-	pionICE := toPionICEServers(iceServers)
+	// Step 3: Convert ICE servers to Pion format and store for reuse
+	c.iceServers = toPionICEServers(iceServers)
 
 	// Step 4: Create publisher PeerConnection (sends VP8 video with our data)
-	if err := c.createPublisher(ctx, pionICE); err != nil {
+	if err := c.createPublisher(ctx, c.iceServers); err != nil {
 		return fmt.Errorf("create publisher: %w", err)
 	}
 
-	// Step 5: Process SFU messages (SDP offers/answers, ICE candidates)
+	// Step 5: Send setSlots — tells SFU we want to receive 1 video slot
+	// (without this, SFU never sends subscriberSdpOffer)
+	slots := make([]map[string]interface{}, 1)
+	slots[0] = map[string]interface{}{"width": 256, "height": 144}
+	c.sfu.writeJSON(map[string]interface{}{
+		"uid": uuid.New().String(),
+		"setSlots": map[string]interface{}{
+			"slots":              slots,
+			"audioSlotsCount":    0,
+			"gridConfig":         map[string]interface{}{},
+			"key":                1,
+			"selfViewVisibility": "ON_LOADING_THEN_SHOW",
+			"shutdownAllVideo":   nil,
+			"withSelfView":       false,
+		},
+	})
+	c.logger.Printf("[telemost] Sent setSlots (1 video slot)")
+
+	// Step 6: Process SFU messages (SDP offers/answers, ICE candidates)
 	c.logger.Printf("[telemost] Processing SFU signaling...")
 	return c.processSFUMessages(ctx)
 }
@@ -97,16 +117,28 @@ func (c *Client) createPublisher(ctx context.Context, iceServers []webrtc.ICESer
 	}
 	c.pubPC = pc
 
+	// Create audio track (required by Telemost SFU — browser always sends audio+video)
+	audioTrack, err := webrtc.NewTrackLocalStaticSample(
+		webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeOpus},
+		"audio", "tunnel-audio",
+	)
+	if err != nil {
+		return fmt.Errorf("create audio track: %w", err)
+	}
+	if _, err := pc.AddTrack(audioTrack); err != nil {
+		return fmt.Errorf("add audio track: %w", err)
+	}
+
 	// Create VP8 video track for tunneling data
 	videoTrack, err := webrtc.NewTrackLocalStaticSample(
 		webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeVP8},
 		"video", "tunnel-video",
 	)
 	if err != nil {
-		return fmt.Errorf("create track: %w", err)
+		return fmt.Errorf("create video track: %w", err)
 	}
 	if _, err := pc.AddTrack(videoTrack); err != nil {
-		return fmt.Errorf("add track: %w", err)
+		return fmt.Errorf("add video track: %w", err)
 	}
 
 	// Create VP8 tunnel and wire it to the track
@@ -129,20 +161,24 @@ func (c *Client) createPublisher(ctx context.Context, iceServers []webrtc.ICESer
 				go c.OnTunnel(tunnel)
 			}
 		}
-		if state == webrtc.PeerConnectionStateFailed || state == webrtc.PeerConnectionStateDisconnected {
+		if state == webrtc.PeerConnectionStateDisconnected {
+			c.logger.Printf("[telemost] Publisher disconnected (may recover via ICE restart)")
+		}
+		if state == webrtc.PeerConnectionStateFailed {
 			c.Close()
 		}
 	})
 
-	// Gather ICE candidates and send to SFU
+	// Trickle ICE: send candidates separately as webrtcIceCandidate
+	// (browser sends SDP with 0 candidates, then trickles them)
 	pc.OnICECandidate(func(candidate *webrtc.ICECandidate) {
 		if candidate == nil {
 			return
 		}
-		c.sendICECandidate("pub", candidate)
+		c.sendICECandidate("PUBLISHER", candidate)
 	})
 
-	// Create offer
+	// Create and send offer immediately (no candidates in SDP)
 	offer, err := pc.CreateOffer(nil)
 	if err != nil {
 		return fmt.Errorf("create offer: %w", err)
@@ -151,12 +187,12 @@ func (c *Client) createPublisher(ctx context.Context, iceServers []webrtc.ICESer
 		return fmt.Errorf("set local desc: %w", err)
 	}
 
-	// Send offer to SFU
-	c.logger.Printf("[telemost] Sending pub offer to SFU...")
+	c.logger.Printf("[telemost] Sending pub offer to SFU (trickle ICE)...")
 	return c.sfu.writeJSON(map[string]interface{}{
+		"uid": uuid.New().String(),
 		"publisherSdpOffer": map[string]interface{}{
 			"sdp":   offer.SDP,
-			"pcSeq": 0,
+			"pcSeq": 1,
 		},
 	})
 }
@@ -186,11 +222,12 @@ func (c *Client) createSubscriber(iceServers []webrtc.ICEServer, sdpOffer string
 		c.logger.Printf("[telemost] Subscriber state: %s", state)
 	})
 
+	// Trickle ICE for subscriber
 	pc.OnICECandidate(func(candidate *webrtc.ICECandidate) {
 		if candidate == nil {
 			return
 		}
-		c.sendICECandidate("sub", candidate)
+		c.sendICECandidate("SUBSCRIBER", candidate)
 	})
 
 	// Set remote SDP (offer from SFU)
@@ -201,7 +238,7 @@ func (c *Client) createSubscriber(iceServers []webrtc.ICEServer, sdpOffer string
 		return fmt.Errorf("set remote offer: %w", err)
 	}
 
-	// Create answer
+	// Create and send answer (trickle ICE)
 	answer, err := pc.CreateAnswer(nil)
 	if err != nil {
 		return fmt.Errorf("create answer: %w", err)
@@ -210,11 +247,11 @@ func (c *Client) createSubscriber(iceServers []webrtc.ICEServer, sdpOffer string
 		return fmt.Errorf("set local desc: %w", err)
 	}
 
-	// Send answer to SFU
 	return c.sfu.writeJSON(map[string]interface{}{
+		"uid": uuid.New().String(),
 		"subscriberSdpAnswer": map[string]interface{}{
 			"sdp":   answer.SDP,
-			"pcSeq": 0,
+			"pcSeq": 1,
 		},
 	})
 }
@@ -260,6 +297,27 @@ func (c *Client) processSFUMessages(ctx context.Context) error {
 			continue
 		}
 
+		// Extract uid for ack echo
+		var msgUID string
+		if raw, ok := envelope["uid"]; ok {
+			json.Unmarshal(raw, &msgUID)
+		}
+
+		// Send ack echoing the message uid (required by Yandex SFU protocol)
+		sendAck := func() {
+			if msgUID != "" {
+				c.sfu.writeJSON(map[string]interface{}{
+					"uid": msgUID,
+					"ack": map[string]interface{}{"status": map[string]interface{}{"code": "OK"}},
+				})
+			}
+		}
+
+		// Skip ack messages from SFU
+		if _, ok := envelope["ack"]; ok {
+			continue
+		}
+
 		// Handle publisher SDP answer from SFU
 		if raw, ok := envelope["publisherSdpAnswer"]; ok {
 			var ans struct {
@@ -274,6 +332,7 @@ func (c *Client) processSFUMessages(ctx context.Context) error {
 					})
 				}
 			}
+			sendAck()
 		}
 
 		// Handle subscriber SDP offer from SFU
@@ -283,51 +342,75 @@ func (c *Client) processSFUMessages(ctx context.Context) error {
 			}
 			if json.Unmarshal(raw, &offer) == nil && offer.SDP != "" {
 				c.logger.Printf("[telemost] Got sub offer from SFU")
-				if c.subPC == nil {
-					iceServers := toPionICEServers(nil) // sub uses existing ICE config
-					if c.pubPC != nil {
-						// Reuse ICE servers from publisher config
-						c.createSubscriber(iceServers, offer.SDP)
-					}
+				if c.subPC == nil && c.pubPC != nil {
+					c.createSubscriber(c.iceServers, offer.SDP)
 				}
 			}
+			sendAck()
 		}
 
-		// Handle ICE candidates from SFU
-		if raw, ok := envelope["iceCandidate"]; ok {
+		// Ack all other SFU messages (updateDescription, vadActivity, slotsConfig, etc.)
+		if _, ok := envelope["updateDescription"]; ok {
+			sendAck()
+		} else if _, ok := envelope["vadActivity"]; ok {
+			sendAck()
+		} else if _, ok := envelope["slotsConfig"]; ok {
+			sendAck()
+		} else if _, ok := envelope["slotsMeta"]; ok {
+			sendAck()
+		} else if _, ok := envelope["upsertDescription"]; ok {
+			sendAck()
+		} else if _, ok := envelope["removeDescription"]; ok {
+			sendAck()
+		}
+
+		// Handle ICE candidates from SFU (Yandex uses "webrtcIceCandidate" key)
+		if raw, ok := envelope["webrtcIceCandidate"]; ok {
 			var cand struct {
 				Candidate     string `json:"candidate"`
 				SDPMid        string `json:"sdpMid"`
-				SDPMLineIndex uint16 `json:"sdpMLineIndex"`
-				Role          string `json:"role"`
+				SDPMLineIndex uint16 `json:"sdpMlineIndex"`
+				Target        string `json:"target"`
 			}
 			if json.Unmarshal(raw, &cand) == nil && cand.Candidate != "" {
 				ice := webrtc.ICECandidateInit{
 					Candidate: cand.Candidate,
 					SDPMid:    &cand.SDPMid,
 				}
-				if cand.Role == "sub" && c.subPC != nil {
+				if cand.Target == "SUBSCRIBER" && c.subPC != nil {
 					c.subPC.AddICECandidate(ice)
 				} else if c.pubPC != nil {
 					c.pubPC.AddICECandidate(ice)
 				}
 			}
+			sendAck()
 		}
 	}
 }
 
-// sendICECandidate sends an ICE candidate to the SFU.
-func (c *Client) sendICECandidate(role string, candidate *webrtc.ICECandidate) {
+// sendICECandidate sends an ICE candidate to the SFU using Yandex format.
+func (c *Client) sendICECandidate(target string, candidate *webrtc.ICECandidate) {
 	if c.sfu == nil {
 		return
 	}
 	init := candidate.ToJSON()
+
+	// Extract usernameFragment from candidate string (Pion doesn't fill UsernameFragment)
+	// Format: "... ufrag XXXX ..."
+	ufrag := ""
+	if parts := strings.Split(init.Candidate, " ufrag "); len(parts) > 1 {
+		ufrag = strings.Fields(parts[1])[0]
+	}
+
 	c.sfu.writeJSON(map[string]interface{}{
-		"iceCandidate": map[string]interface{}{
-			"candidate":     init.Candidate,
-			"sdpMid":        init.SDPMid,
-			"sdpMLineIndex": init.SDPMLineIndex,
-			"role":          role,
+		"uid": uuid.New().String(),
+		"webrtcIceCandidate": map[string]interface{}{
+			"candidate":        init.Candidate,
+			"sdpMid":           init.SDPMid,
+			"sdpMlineIndex":    init.SDPMLineIndex,
+			"usernameFragment": ufrag,
+			"target":           target, // "PUBLISHER" or "SUBSCRIBER"
+			"pcSeq":            1,
 		},
 	})
 }

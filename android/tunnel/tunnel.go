@@ -343,7 +343,11 @@ func StartVP8(tunFd int, telemostLink, wgPrivKey, serverPubKey, wgAddress, wgDNS
 func runVP8Tunnel(ctx context.Context, tunFd int, telemostLink, wgPrivKey, serverPubKey, wgAddress, wgDNS string) error {
 	// Use Android-specific TUN wrapper (same as TURN mode) — tun.CreateTUNFromFile
 	// does not work on Android because it expects Linux TUN semantics.
-	tunDev := newAndroidTUN(tunFd, 1280)
+	//
+	// MTU=1000: VP8 tunnel limits payloads to 1100 bytes (MaxPayloadSize).
+	// WireGuard adds 48 bytes overhead, so inner IP MTU must be ≤1052.
+	// Using 1000 gives headroom: WG packet = 1048 bytes ≤ 1100.
+	tunDev := newAndroidTUN(tunFd, 1000)
 
 	// Listen on local UDP for WireGuard
 	listenConn, err := net.ListenPacket("udp", "127.0.0.1:0")
@@ -502,6 +506,66 @@ var serverTurnCreds struct {
 	addr string
 }
 
+// serverInfo holds the VPS server URL and client name for runtime credential refresh.
+var serverInfo struct {
+	url  string // e.g. "https://1.2.3.4:8080"
+	name string // client name (e.g. "Alex")
+}
+
+// SetServerInfo configures the server URL and client name for runtime TURN credential refresh.
+// Call from Android before StartWithCreds().
+func SetServerInfo(serverURL, clientName string) {
+	serverInfo.url = strings.TrimRight(serverURL, "/")
+	serverInfo.name = clientName
+	logMsg("Server info set: url=%s name=%s", serverInfo.url, clientName)
+}
+
+// fetchFreshCreds fetches fresh TURN credentials from the VPS server.
+// Updates serverTurnCreds in place. Called before connecting and on reconnect.
+func fetchFreshCreds() error {
+	if serverInfo.url == "" || serverInfo.name == "" {
+		return fmt.Errorf("server info not set")
+	}
+	url := fmt.Sprintf("%s/api/turn-creds?name=%s", serverInfo.url, serverInfo.name)
+	logMsg("[TURN] Fetching fresh credentials from %s", url)
+
+	client := &http.Client{
+		Timeout:   15 * time.Second,
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+			DialContext:     androidDNSDialer().DialContext,
+		},
+	}
+	resp, err := client.Get(url)
+	if err != nil {
+		return fmt.Errorf("HTTP request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("server returned %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	var creds struct {
+		User string `json:"turn_username"`
+		Pass string `json:"turn_password"`
+		Addr string `json:"turn_address"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&creds); err != nil {
+		return fmt.Errorf("decode response: %w", err)
+	}
+	if creds.User == "" || creds.Addr == "" {
+		return fmt.Errorf("empty credentials in response")
+	}
+
+	serverTurnCreds.user = creds.User
+	serverTurnCreds.pass = creds.Pass
+	serverTurnCreds.addr = creds.Addr
+	logMsg("[TURN] Fetched fresh credentials: user=%s addr=%s", creds.User, creds.Addr)
+	return nil
+}
+
 func Start(tunFd int, peerAddr, vkLink, yandexLink string, connections int, wgPrivKey, serverPubKey, dtlsFingerprint string) error {
 	tunnelMu.Lock()
 	if running {
@@ -545,6 +609,15 @@ func Start(tunFd int, peerAddr, vkLink, yandexLink string, connections int, wgPr
 		return fmt.Errorf("invalid WG public key")
 	}
 
+	// If server info is set, fetch fresh TURN credentials before connecting.
+	// This ensures we always have a valid TURN allocation (VK kills idle calls).
+	if serverInfo.url != "" && serverInfo.name != "" {
+		if err := fetchFreshCreds(); err != nil {
+			logErr("[TURN] Fresh credential fetch failed: %s (using cached)", err)
+			// Continue with cached creds — they might still work
+		}
+	}
+
 	var link string
 	var getCreds func(string) (string, string, string, error)
 	if serverTurnCreds.user != "" {
@@ -554,7 +627,10 @@ func Start(tunFd int, peerAddr, vkLink, yandexLink string, connections int, wgPr
 			return serverTurnCreds.user, serverTurnCreds.pass, serverTurnCreds.addr, nil
 		}
 		if connections <= 0 {
-			connections = 8
+			// Use 2 connections: one active + one hot standby.
+			// More connections all use the same TURN credentials, adding unnecessary
+			// load on the TURN server without reliability benefit.
+			connections = 2
 		}
 	} else if vkLink != "" {
 		parts := strings.Split(vkLink, "join/")
@@ -1032,6 +1108,10 @@ func oneDtlsConnection(ctx context.Context, peer *net.UDPAddr, listenConn net.Pa
 	defer func() { c <- err }()
 	dtlsctx, dtlscancel := context.WithCancel(ctx)
 	defer dtlscancel()
+
+	// Reset any deadline left by a previous connection on the shared listenConn.
+	// If a previous pair set deadline=now (via AfterFunc), this unblocks new readers.
+	listenConn.SetDeadline(time.Time{})
 	conn1, conn2 := asyncPacketPipe()
 	go func() {
 		for {
@@ -1077,7 +1157,9 @@ func oneDtlsConnection(ctx context.Context, peer *net.UDPAddr, listenConn net.Pa
 	var wg sync.WaitGroup
 	wg.Add(2)
 	context.AfterFunc(dtlsctx, func() {
-		listenConn.SetDeadline(time.Now())
+		// Only set deadline on THIS connection's dtlsConn — NOT on the shared listenConn.
+		// Setting deadline on the shared listenConn would cascade-kill all other pairs.
+		// The listenConn reader goroutine will exit on its next iteration via dtlsctx.Done().
 		dtlsConn.SetDeadline(time.Now())
 	})
 	var addr atomic.Value
@@ -1316,6 +1398,12 @@ func oneTurnConnectionLoop(ctx context.Context, params *turnParams, peer *net.UD
 			go oneTurnConnection(ctx, params, peer, c2, c)
 			if err := <-c; err != nil {
 				logMsg("TURN error (retry in %v): %s", backoff, err)
+				// Fetch fresh credentials on failure — old allocation may be dead
+				if serverInfo.url != "" && serverInfo.name != "" {
+					if err2 := fetchFreshCreds(); err2 != nil {
+						logErr("[TURN] Credential refresh failed: %s", err2)
+					}
+				}
 				// Exponential backoff on failure, max 30s
 				select {
 				case <-time.After(backoff):

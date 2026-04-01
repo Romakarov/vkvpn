@@ -12,6 +12,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -80,7 +81,8 @@ func fetchConferenceInfo(ctx context.Context, confID string) (*conferenceInfo, e
 
 // sfuConn wraps a WebSocket connection to the Telemost SFU media server.
 type sfuConn struct {
-	ws *websocket.Conn
+	ws  *websocket.Conn
+	wmu sync.Mutex // protects writes — gorilla/websocket doesn't support concurrent writes
 }
 
 // connectSFU establishes a WebSocket to the SFU media server and sends the hello.
@@ -95,9 +97,18 @@ func connectSFU(ctx context.Context, info *conferenceInfo) (*sfuConn, []iceServe
 		return nil, nil, fmt.Errorf("SFU WS dial: %w", err)
 	}
 
+	sfu := &sfuConn{ws: ws}
+
+	// Override ping handler to use our mutex-protected write path
+	ws.SetPingHandler(func(data string) error {
+		sfu.wmu.Lock()
+		defer sfu.wmu.Unlock()
+		return ws.WriteControl(websocket.PongMessage, []byte(data), time.Now().Add(5*time.Second))
+	})
+
 	// Send hello message
 	hello := buildHello(info.PeerID, info.RoomID, info.Credentials)
-	if err := ws.WriteJSON(hello); err != nil {
+	if err := sfu.writeJSON(hello); err != nil {
 		ws.Close()
 		return nil, nil, fmt.Errorf("SFU hello: %w", err)
 	}
@@ -125,6 +136,7 @@ func connectSFU(ctx context.Context, info *conferenceInfo) (*sfuConn, []iceServe
 
 		// Parse serverHello for ICE servers
 		var serverHello struct {
+			UID         string `json:"uid"`
 			ServerHello struct {
 				RtcConfiguration struct {
 					IceServers []iceServerConfig `json:"iceServers"`
@@ -135,7 +147,14 @@ func connectSFU(ctx context.Context, info *conferenceInfo) (*sfuConn, []iceServe
 			ice := serverHello.ServerHello.RtcConfiguration.IceServers
 			if len(ice) > 0 {
 				ws.SetReadDeadline(time.Time{}) // clear deadline
-				return &sfuConn{ws: ws}, ice, nil
+				// Send ack echoing the serverHello uid (required by Yandex SFU)
+				sfu.writeJSON(map[string]interface{}{
+					"uid": serverHello.UID,
+					"ack": map[string]interface{}{
+						"status": map[string]interface{}{"code": "OK"},
+					},
+				})
+				return sfu, ice, nil
 			}
 		}
 	}
@@ -150,8 +169,10 @@ func (s *sfuConn) readMessage() (json.RawMessage, error) {
 	return json.RawMessage(msg), nil
 }
 
-// writeJSON sends a JSON message to the SFU.
+// writeJSON sends a JSON message to the SFU (goroutine-safe).
 func (s *sfuConn) writeJSON(v interface{}) error {
+	s.wmu.Lock()
+	defer s.wmu.Unlock()
 	return s.ws.WriteJSON(v)
 }
 
@@ -160,16 +181,18 @@ func (s *sfuConn) close() error {
 	return s.ws.Close()
 }
 
-// keepalive sends periodic pings to keep the SFU connection alive.
+// keepalive sends periodic WebSocket ping frames to keep the SFU connection alive.
 func (s *sfuConn) keepalive(ctx context.Context) {
-	ticker := time.NewTicker(30 * time.Second)
+	ticker := time.NewTicker(4 * time.Second)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			s.wmu.Lock()
 			s.ws.WriteControl(websocket.PingMessage, nil, time.Now().Add(5*time.Second))
+			s.wmu.Unlock()
 		}
 	}
 }
@@ -205,13 +228,13 @@ func buildHello(participantID, roomID, credentials string) map[string]interface{
 		"hello": map[string]interface{}{
 			"participantMeta": map[string]interface{}{
 				"name": "Гость", "role": "SPEAKER", "description": "",
-				"sendAudio": false, "sendVideo": false,
+				"sendAudio": true, "sendVideo": true,
 			},
 			"participantAttributes": map[string]interface{}{
 				"name": "Гость", "role": "SPEAKER", "description": "",
 			},
-			"sendAudio":              false,
-			"sendVideo":              false,
+			"sendAudio":              true,
+			"sendVideo":              true,
 			"sendSharing":            false,
 			"participantId":          participantID,
 			"roomId":                 roomID,

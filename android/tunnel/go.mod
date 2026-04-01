@@ -8,7 +8,7 @@ require (
 	github.com/pion/dtls/v3 v3.1.2
 	github.com/pion/logging v0.2.4
 	github.com/pion/turn/v5 v5.0.3
-	golang.org/x/mobile v0.0.0-20250305212854-3a7bc9f8a4de
+	golang.org/x/mobile v0.0.0-20260312152759-81488f6aeb60
 	golang.zx2c4.com/wireguard v0.0.0-20250521234502-f333402bd9cb
 )
 

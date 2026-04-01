@@ -46,12 +46,13 @@ class TunnelVpnService : VpnService() {
                 val turnAddr = intent.getStringExtra("turn_address") ?: ""
                 val protocol = intent.getStringExtra("protocol") ?: "turn"
                 val telemostLink = intent.getStringExtra("telemost_link") ?: ""
+                val clientName = intent.getStringExtra("client_name") ?: ""
 
                 startForeground(1, buildNotification("Connecting..."))
                 if (protocol == "vp8" && telemostLink.isNotEmpty()) {
-                    startVP8Tunnel(telemostLink, wgPrivKey, wgAddress, wgDns, serverPubKey)
+                    startVP8Tunnel(server, telemostLink, wgPrivKey, wgAddress, wgDns, serverPubKey)
                 } else {
-                    startTunnel(server, link, provider, wgPrivKey, wgAddress, wgDns, serverPubKey, dtlsPort, dtlsFingerprint, turnUser, turnPass, turnAddr)
+                    startTunnel(server, link, provider, wgPrivKey, wgAddress, wgDns, serverPubKey, dtlsPort, dtlsFingerprint, turnUser, turnPass, turnAddr, clientName)
                 }
             }
             ACTION_STOP -> {
@@ -68,7 +69,8 @@ class TunnelVpnService : VpnService() {
         server: String, link: String, provider: String,
         wgPrivKey: String, wgAddress: String, wgDns: String,
         serverPubKey: String, dtlsPort: Int, dtlsFingerprint: String,
-        turnUser: String = "", turnPass: String = "", turnAddr: String = ""
+        turnUser: String = "", turnPass: String = "", turnAddr: String = "",
+        clientName: String = ""
     ) {
         tunnelThread = Thread {
             try {
@@ -103,6 +105,10 @@ class TunnelVpnService : VpnService() {
                 Log.i(TAG, "Starting tunnel to $peerAddr")
                 // Enable remote logging to VPS
                 Tunnel.setRemoteLog("https://$server:8080", wgAddress)
+                // Set server info for runtime TURN credential refresh
+                if (clientName.isNotEmpty()) {
+                    Tunnel.setServerInfo("https://$server:8080", clientName)
+                }
                 if (turnUser.isNotEmpty()) {
                     Log.i(TAG, "Using server-provided TURN credentials")
                     Tunnel.startWithCreds(
@@ -143,7 +149,7 @@ class TunnelVpnService : VpnService() {
     }
 
     private fun startVP8Tunnel(
-        telemostLink: String, wgPrivKey: String, wgAddress: String,
+        server: String, telemostLink: String, wgPrivKey: String, wgAddress: String,
         wgDns: String, serverPubKey: String
     ) {
         tunnelThread = Thread {
@@ -153,7 +159,10 @@ class TunnelVpnService : VpnService() {
                     .addAddress(wgAddress, 32)
                     .addRoute("0.0.0.0", 0)
                     .addRoute("::", 0)
-                    .setMtu(1280)
+                    // MTU=1000: VP8 tunnel max payload is 1100 bytes.
+                    // WireGuard adds 48 bytes overhead → inner MTU must be ≤1052.
+                    // 1000 gives headroom: WG packet = 1048 bytes ≤ 1100.
+                    .setMtu(1000)
                     .setBlocking(true)
 
                 wgDns.split(",").map { it.trim() }.filter { it.isNotEmpty() }.forEach {
@@ -171,6 +180,8 @@ class TunnelVpnService : VpnService() {
                 vpnInterface = null
 
                 Log.i(TAG, "Starting VP8/Telemost tunnel")
+                // Enable remote log shipping so we can diagnose issues from admin panel
+                Tunnel.setRemoteLog("https://$server:8080", wgAddress)
                 Tunnel.startVP8(
                     tunFd.toLong(), telemostLink,
                     wgPrivKey, serverPubKey, wgAddress, wgDns
