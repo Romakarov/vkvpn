@@ -129,18 +129,18 @@ func (c *Client) createPublisher(ctx context.Context, iceServers []webrtc.ICESer
 		}
 	}()
 
-	// Monitor connection state.
-	// After publisher connects, wait 3s then create DataChannel via SDP renegotiation
-	// (same approach as upstream dc-creator-telemost.js).
+	// Create DataChannel before offer so m=application is in the initial SDP.
+	// This avoids SDP renegotiation which the SFU doesn't support.
+	ordered := true
+	dc, err := pc.CreateDataChannel("sharing", &webrtc.DataChannelInit{Ordered: &ordered})
+	if err != nil {
+		return fmt.Errorf("create DC: %w", err)
+	}
+	c.dcPub = dc
+	c.setupDCHandlers(dc, "pub")
+
 	pc.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
 		c.logger.Printf("[telemost] Publisher state: %s", state)
-		if state == webrtc.PeerConnectionStateConnected {
-			go func() {
-				time.Sleep(3 * time.Second)
-				c.logger.Printf("[telemost] Creating DataChannel via renegotiation...")
-				c.createAndNegotiateDC()
-			}()
-		}
 		if state == webrtc.PeerConnectionStateFailed {
 			c.Close()
 		}
@@ -167,47 +167,6 @@ func (c *Client) createPublisher(ctx context.Context, iceServers []webrtc.ICESer
 		"publisherSdpOffer": map[string]interface{}{
 			"sdp":   offer.SDP,
 			"pcSeq": c.pcSeq,
-		},
-	})
-}
-
-// createAndNegotiateDC creates a DataChannel on the publisher PC and renegotiates SDP.
-// Must be called AFTER the publisher is connected (3s delay recommended).
-func (c *Client) createAndNegotiateDC() {
-	if c.pubPC == nil {
-		return
-	}
-
-	ordered := true
-	dc, err := c.pubPC.CreateDataChannel("sharing", &webrtc.DataChannelInit{
-		Ordered: &ordered,
-	})
-	if err != nil {
-		c.logger.Printf("[telemost] DC create error: %s", err)
-		return
-	}
-	c.dcPub = dc
-	c.setupDCHandlers(dc, "pub")
-
-	// Renegotiate: create offer with the new DataChannel
-	c.pcSeq++
-	offer, err := c.pubPC.CreateOffer(nil)
-	if err != nil {
-		c.logger.Printf("[telemost] DC offer error: %s", err)
-		return
-	}
-	if err := c.pubPC.SetLocalDescription(offer); err != nil {
-		c.logger.Printf("[telemost] DC set local desc error: %s", err)
-		return
-	}
-
-	c.logger.Printf("[telemost] DC renegotiating (pcSeq=%d)...", c.pcSeq)
-	c.sfu.writeJSON(map[string]interface{}{
-		"uid": uuid.New().String(),
-		"publisherSdpOffer": map[string]interface{}{
-			"sdp":    offer.SDP,
-			"pcSeq":  c.pcSeq,
-			"tracks": []interface{}{},
 		},
 	})
 }
@@ -529,7 +488,7 @@ func (c *Client) sendICECandidate(target string, candidate *webrtc.ICECandidate)
 			"sdpMlineIndex":    init.SDPMLineIndex,
 			"usernameFragment": ufrag,
 			"target":           target,
-			"pcSeq":            c.pcSeq,
+			"pcSeq":            1,
 		},
 	})
 }
