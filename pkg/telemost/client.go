@@ -172,44 +172,59 @@ func (c *Client) createPublisher(ctx context.Context, iceServers []webrtc.ICESer
 }
 
 // setupDCHandlers configures message handlers on a DataChannel.
+//
+// Telemost SFU relays DataChannel messages in one direction only:
+//   publisher DC → SFU → subscriber DC  (sender → receiver)
+//
+// Therefore each participant uses their OWN publisher DC to SEND data
+// and their OWN subscriber DC to RECEIVE data from the remote participant.
+//
+// Handshake:
+//   - pub side sends "tunnel:ping" periodically (SFU forwards to remote's sub)
+//   - sub side receives "tunnel:ping" from remote's pub → tunnel is ready
+//   - sub does NOT respond (sub→pub direction is not supported by SFU)
 func (c *Client) setupDCHandlers(dc *webrtc.DataChannel, side string) {
 	dc.OnOpen(func() {
 		c.logger.Printf("[telemost] DC 'sharing' OPEN (%s)", side)
-		// Start ping loop
-		go func() {
-			for i := 0; i < 15; i++ {
-				select {
-				case <-c.dcReady:
-					return
-				case <-c.done:
-					return
-				default:
+		if side == "pub" {
+			// Send pings so the remote subscriber knows we're ready
+			go func() {
+				for i := 0; i < 15; i++ {
+					select {
+					case <-c.dcReady:
+						return
+					case <-c.done:
+						return
+					default:
+					}
+					dc.SendText("tunnel:ping")
+					c.logger.Printf("[telemost] DC pub: sent tunnel:ping")
+					time.Sleep(2 * time.Second)
 				}
-				dc.SendText("tunnel:ping")
-				c.logger.Printf("[telemost] DC %s: sent tunnel:ping", side)
-				time.Sleep(2 * time.Second)
-			}
-		}()
+			}()
+		}
 	})
 
 	dc.OnMessage(func(msg webrtc.DataChannelMessage) {
 		if msg.IsString {
 			text := string(msg.Data)
 			c.logger.Printf("[telemost] DC %s text: %s", side, text)
-			if text == "tunnel:ping" {
-				dc.SendText("tunnel:pong")
-				c.onDCReady(dc)
-			} else if text == "tunnel:pong" {
-				c.onDCReady(dc)
+			// When sub receives "tunnel:ping" from remote pub, the channel is ready.
+			// (Subscriber cannot respond via sub DC — SFU only relays pub→sub.)
+			if side == "sub" && text == "tunnel:ping" {
+				c.onDCReady()
 			}
 			return
 		}
-		data := make([]byte, len(msg.Data))
-		copy(data, msg.Data)
-		select {
-		case c.dcRecv <- data:
-		case <-c.done:
-		default:
+		// Binary data on sub DC = incoming WireGuard packets from remote participant.
+		if side == "sub" {
+			data := make([]byte, len(msg.Data))
+			copy(data, msg.Data)
+			select {
+			case c.dcRecv <- data:
+			case <-c.done:
+			default:
+			}
 		}
 	})
 
@@ -218,8 +233,9 @@ func (c *Client) setupDCHandlers(dc *webrtc.DataChannel, side string) {
 	})
 }
 
-// onDCReady is called when DC ping/pong handshake completes.
-func (c *Client) onDCReady(dc *webrtc.DataChannel) {
+// onDCReady is called when the sub DC receives the first ping from the remote participant.
+// The tunnel uses pubDC to send and dcRecv (populated from subDC) to receive.
+func (c *Client) onDCReady() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -233,7 +249,8 @@ func (c *Client) onDCReady(dc *webrtc.DataChannel) {
 	c.logger.Printf("[telemost] === DataChannel TUNNEL READY ===")
 
 	if c.OnDC != nil {
-		pconn := NewDCPacketConn(dc, c.dcRecv, c.done)
+		// pubDC for writing, dcRecv (from subDC) for reading
+		pconn := NewDCPacketConn(c.dcPub, c.dcRecv, c.done)
 		go c.OnDC(pconn)
 	}
 }
