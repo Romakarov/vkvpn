@@ -35,7 +35,6 @@ import (
 	"golang.zx2c4.com/wireguard/tun"
 
 	"github.com/Romakarov/vkvpn/pkg/telemost"
-	"github.com/Romakarov/vkvpn/pkg/vp8tunnel"
 
 	_ "golang.org/x/mobile/bind" // required by gomobile
 )
@@ -395,9 +394,9 @@ func runVP8Tunnel(ctx context.Context, tunFd int, telemostLink, wgPrivKey, serve
 		}
 
 		client := telemost.NewClient(log.Default())
-		tunnelReady := make(chan *vp8tunnel.Tunnel, 1)
-		client.OnTunnel = func(t *vp8tunnel.Tunnel) {
-			tunnelReady <- t
+		dcReady := make(chan *telemost.DCPacketConn, 1)
+		client.OnDC = func(pconn *telemost.DCPacketConn) {
+			dcReady <- pconn
 		}
 
 		callDone := make(chan error, 1)
@@ -406,23 +405,23 @@ func runVP8Tunnel(ctx context.Context, tunFd int, telemostLink, wgPrivKey, serve
 		}()
 
 		select {
-		case tunnel := <-tunnelReady:
-			logMsg("[VP8] Telemost tunnel established — bridging to WireGuard")
-			bridgeVP8ToLocal(ctx, listenConn, tunnel)
-			logMsg("[VP8] Bridge ended")
+		case pconn := <-dcReady:
+			logMsg("[DC] Telemost tunnel established — bridging to WireGuard")
+			bridgeDCToLocal(ctx, listenConn, pconn, client.Done())
+			logMsg("[DC] Bridge ended")
 
 		case err := <-callDone:
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
-			logMsg("[VP8] Telemost failed: %v", err)
+			logMsg("[DC] Telemost failed: %v", err)
 		}
 
 		client.Close()
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		logMsg("[VP8] Reconnecting in 5s...")
+		logMsg("[DC] Reconnecting in 5s...")
 		select {
 		case <-time.After(5 * time.Second):
 		case <-ctx.Done():
@@ -431,9 +430,8 @@ func runVP8Tunnel(ctx context.Context, tunFd int, telemostLink, wgPrivKey, serve
 	}
 }
 
-// bridgeVP8ToLocal forwards packets between local WireGuard UDP and VP8 tunnel.
-func bridgeVP8ToLocal(ctx context.Context, localConn net.PacketConn, tunnel *vp8tunnel.Tunnel) {
-	pconn := vp8tunnel.NewPacketConn(tunnel)
+// bridgeDCToLocal forwards packets between local WireGuard UDP and DC tunnel.
+func bridgeDCToLocal(ctx context.Context, localConn net.PacketConn, pconn *telemost.DCPacketConn, tunnelDone <-chan struct{}) {
 	var wgClientAddr atomic.Value // stores *net.Addr of WG client
 
 	ctx2, cancel := context.WithCancel(ctx)
@@ -442,12 +440,19 @@ func bridgeVP8ToLocal(ctx context.Context, localConn net.PacketConn, tunnel *vp8
 	var wg sync.WaitGroup
 	wg.Add(2)
 
-	// Local WG → VP8
+	// Local WG → DC
 	go func() {
 		defer wg.Done()
 		defer cancel()
 		buf := make([]byte, 1600)
 		for {
+			select {
+			case <-ctx2.Done():
+				return
+			case <-tunnelDone:
+				return
+			default:
+			}
 			n, addr, err := localConn.ReadFrom(buf)
 			if err != nil || ctx2.Err() != nil {
 				return
@@ -459,12 +464,19 @@ func bridgeVP8ToLocal(ctx context.Context, localConn net.PacketConn, tunnel *vp8
 		}
 	}()
 
-	// VP8 → Local WG
+	// DC → Local WG
 	go func() {
 		defer wg.Done()
 		defer cancel()
 		buf := make([]byte, 1600)
 		for {
+			select {
+			case <-ctx2.Done():
+				return
+			case <-tunnelDone:
+				return
+			default:
+			}
 			n, _, err := pconn.ReadFrom(buf)
 			if err != nil || ctx2.Err() != nil {
 				return
@@ -482,7 +494,7 @@ func bridgeVP8ToLocal(ctx context.Context, localConn net.PacketConn, tunnel *vp8
 
 	// Wait for tunnel to close or context cancel
 	select {
-	case <-tunnel.Done():
+	case <-tunnelDone:
 	case <-ctx2.Done():
 	}
 	cancel()
