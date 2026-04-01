@@ -1,5 +1,4 @@
-// Command vp8test is a diagnostic tool for testing the VP8/Telemost transport
-// step by step. It checks each stage of the connection and reports results.
+// Command vp8test is a diagnostic tool for testing the Telemost DataChannel transport.
 //
 // Usage:
 //
@@ -16,7 +15,6 @@ import (
 	"time"
 
 	"github.com/Romakarov/vkvpn/pkg/telemost"
-	"github.com/Romakarov/vkvpn/pkg/vp8tunnel"
 )
 
 func main() {
@@ -34,82 +32,73 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
 	defer cancel()
 
-	// Handle Ctrl+C
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt)
 	go func() {
 		<-sigCh
-		logger.Println("[vp8test] Interrupted, shutting down...")
+		logger.Println("[dctest] Interrupted, shutting down...")
 		cancel()
 	}()
 
-	logger.Println("=== VP8/Telemost Diagnostic Tool ===")
+	logger.Println("=== Telemost DataChannel Diagnostic Tool ===")
 	logger.Printf("Link: %s", *telemostLink)
 	logger.Printf("Timeout: %s", *timeout)
 	logger.Println()
 
-	// Create Telemost client
 	client := telemost.NewClient(logger)
 
-	tunnelReady := make(chan *vp8tunnel.Tunnel, 1)
-	client.OnTunnel = func(t *vp8tunnel.Tunnel) {
-		logger.Println("[vp8test] === TUNNEL ESTABLISHED ===")
-		tunnelReady <- t
+	dcReady := make(chan *telemost.DCPacketConn, 1)
+	client.OnDC = func(pconn *telemost.DCPacketConn) {
+		logger.Println("[dctest] === DC TUNNEL READY ===")
+		dcReady <- pconn
 	}
 
-	// Join call in background
 	errCh := make(chan error, 1)
 	go func() {
 		errCh <- client.JoinCall(ctx, *telemostLink)
 	}()
 
-	// Wait for tunnel or error
 	select {
-	case t := <-tunnelReady:
-		logger.Println("[vp8test] VP8 tunnel is ready for data!")
-		logger.Println("[vp8test] Sending test data frame...")
+	case pconn := <-dcReady:
+		logger.Println("[dctest] DataChannel tunnel is ready!")
+		logger.Println("[dctest] Sending test packet...")
 
-		testData := []byte("VP8_TEST_PING_" + time.Now().Format("15:04:05"))
-		if err := t.Send(testData); err != nil {
-			logger.Printf("[vp8test] Send error: %s", err)
+		testData := []byte("DC_TEST_PING_" + time.Now().Format("15:04:05"))
+		if _, err := pconn.WriteTo(testData, nil); err != nil {
+			logger.Printf("[dctest] Write error: %s", err)
 		} else {
-			logger.Printf("[vp8test] Sent %d bytes: %q", len(testData), testData)
+			logger.Printf("[dctest] Sent %d bytes: %q", len(testData), testData)
 		}
 
-		// Wait for incoming data (from second participant or echo)
-		logger.Println("[vp8test] Waiting 15s for incoming data...")
+		logger.Println("[dctest] Waiting 15s for incoming data...")
 		recvCtx, recvCancel := context.WithTimeout(ctx, 15*time.Second)
 		defer recvCancel()
 
 		go func() {
-			data, err := t.Recv()
+			buf := make([]byte, 1600)
+			n, _, err := pconn.ReadFrom(buf)
 			if err != nil {
-				logger.Printf("[vp8test] Recv error: %s", err)
+				logger.Printf("[dctest] Read error: %s", err)
 				return
 			}
-			logger.Printf("[vp8test] === RECEIVED DATA: %d bytes: %q ===", len(data), data)
+			logger.Printf("[dctest] === RECEIVED DATA: %d bytes: %q ===", n, buf[:n])
 		}()
 
 		select {
 		case <-recvCtx.Done():
-			logger.Println("[vp8test] No data received (expected if only 1 participant)")
+			logger.Println("[dctest] Timeout (expected if only 1 participant in conference)")
 		case err := <-errCh:
-			logger.Printf("[vp8test] Call ended: %v", err)
+			logger.Printf("[dctest] Call ended: %v", err)
 		}
 
 	case err := <-errCh:
-		logger.Printf("[vp8test] === FAILED: %v ===", err)
-		logger.Println()
-		logger.Println("Troubleshooting:")
-		logger.Println("  - Check if Telemost link is valid and conference is active")
-		logger.Println("  - Check if conference API requires authentication now")
-		logger.Println("  - Look at logs above for the exact failure point")
+		logger.Printf("[dctest] === FAILED: %v ===", err)
 		os.Exit(1)
 
 	case <-ctx.Done():
-		logger.Println("[vp8test] Timeout reached")
+		logger.Println("[dctest] Timeout reached")
 	}
 
 	client.Close()
-	logger.Println("[vp8test] Done")
+	logger.Println("[dctest] Done")
 }

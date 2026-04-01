@@ -41,7 +41,7 @@ import (
 	"github.com/Romakarov/vkvpn/pkg/sessionmux"
 	"github.com/Romakarov/vkvpn/pkg/turnauth"
 	"github.com/Romakarov/vkvpn/pkg/telemost"
-	"github.com/Romakarov/vkvpn/pkg/vp8tunnel"
+
 	"github.com/pion/dtls/v3"
 	"github.com/pion/dtls/v3/pkg/crypto/selfsign"
 )
@@ -689,7 +689,7 @@ func legacyBridgeWithFirstPacket(ctx context.Context, conn net.Conn, connectAddr
 	logger.Printf("Legacy DTLS connection closed: %s", conn.RemoteAddr())
 }
 
-// ─── VP8/Telemost Server (secondary transport) ───
+// ─── Telemost DataChannel Server (secondary transport) ───
 
 var vp8Status struct {
 	sync.RWMutex
@@ -700,10 +700,10 @@ var vp8Status struct {
 	BytesOut    int64
 }
 
-// runVP8Server connects to Telemost and bridges VP8 tunnel to WireGuard.
+// runVP8Server connects to Telemost via DataChannel and bridges to WireGuard.
 // Reads TelemostLink from config each iteration, automatically reconnects.
 func runVP8Server(ctx context.Context, wgAddr string) {
-	logger.Printf("VP8 transport starting (Telemost mode)")
+	logger.Printf("Telemost DC transport starting")
 
 	for {
 		select {
@@ -717,7 +717,7 @@ func runVP8Server(ctx context.Context, wgAddr string) {
 		cfg.mu.RUnlock()
 
 		if link == "" {
-			logger.Printf("VP8: no Telemost link configured, waiting 30s...")
+			logger.Printf("DC: no Telemost link configured, waiting 30s...")
 			vp8Status.Lock()
 			vp8Status.Connected = false
 			vp8Status.LastError = "no Telemost link configured"
@@ -731,14 +731,14 @@ func runVP8Server(ctx context.Context, wgAddr string) {
 		}
 
 		client := telemost.NewClient(logger)
-		client.OnTunnel = func(tunnel *vp8tunnel.Tunnel) {
-			logger.Printf("VP8 tunnel established via Telemost — bridging to WireGuard %s", wgAddr)
+		client.OnDC = func(pconn *telemost.DCPacketConn) {
+			logger.Printf("DC tunnel established via Telemost — bridging to WireGuard %s", wgAddr)
 			vp8Status.Lock()
 			vp8Status.Connected = true
 			vp8Status.ConnectedAt = time.Now()
 			vp8Status.LastError = ""
 			vp8Status.Unlock()
-			bridgeVP8ToWG(tunnel, wgAddr)
+			bridgeDCToWG(pconn, wgAddr)
 			vp8Status.Lock()
 			vp8Status.Connected = false
 			vp8Status.Unlock()
@@ -757,7 +757,7 @@ func runVP8Server(ctx context.Context, wgAddr string) {
 		vp8Status.Connected = false
 		vp8Status.LastError = errMsg
 		vp8Status.Unlock()
-		logger.Printf("VP8 Telemost session ended: %v — reconnecting in 5s...", err)
+		logger.Printf("DC Telemost session ended: %v — reconnecting in 5s...", err)
 		select {
 		case <-time.After(5 * time.Second):
 		case <-ctx.Done():
@@ -766,13 +766,11 @@ func runVP8Server(ctx context.Context, wgAddr string) {
 	}
 }
 
-// bridgeVP8ToWG bridges a VP8 tunnel to WireGuard UDP.
-func bridgeVP8ToWG(tunnel *vp8tunnel.Tunnel, wgAddr string) {
-	pconn := vp8tunnel.NewPacketConn(tunnel)
-
+// bridgeDCToWG bridges a DataChannel PacketConn to WireGuard UDP.
+func bridgeDCToWG(pconn *telemost.DCPacketConn, wgAddr string) {
 	wgConn, err := net.Dial("udp", wgAddr)
 	if err != nil {
-		logger.Printf("VP8: WG dial error: %s", err)
+		logger.Printf("DC: WG dial error: %s", err)
 		return
 	}
 	defer wgConn.Close()
@@ -780,30 +778,30 @@ func bridgeVP8ToWG(tunnel *vp8tunnel.Tunnel, wgAddr string) {
 	var wg sync.WaitGroup
 	wg.Add(2)
 
-	var vp8ToWG, wgToVP8 int64
+	var dcToWG, wgToDC int64
 
-	// VP8 → WG
+	// DC → WG
 	go func() {
 		defer wg.Done()
 		buf := make([]byte, 1600)
 		for {
 			n, _, err := pconn.ReadFrom(buf)
 			if err != nil {
-				logger.Printf("VP8→WG: read error: %s", err)
+				logger.Printf("DC→WG: read error: %s", err)
 				return
 			}
-			vp8ToWG++
-			if vp8ToWG <= 5 || vp8ToWG%500 == 0 {
-				logger.Printf("VP8→WG: pkt #%d size=%d", vp8ToWG, n)
+			dcToWG++
+			if dcToWG <= 5 || dcToWG%500 == 0 {
+				logger.Printf("DC→WG: pkt #%d size=%d", dcToWG, n)
 			}
 			if _, err = wgConn.Write(buf[:n]); err != nil {
-				logger.Printf("VP8→WG: write error: %s", err)
+				logger.Printf("DC→WG: write error: %s", err)
 				return
 			}
 		}
 	}()
 
-	// WG → VP8
+	// WG → DC
 	go func() {
 		defer wg.Done()
 		buf := make([]byte, 1600)
@@ -811,22 +809,22 @@ func bridgeVP8ToWG(tunnel *vp8tunnel.Tunnel, wgAddr string) {
 			wgConn.SetReadDeadline(time.Now().Add(30 * time.Minute))
 			n, err := wgConn.Read(buf)
 			if err != nil {
-				logger.Printf("WG→VP8: read error: %s", err)
+				logger.Printf("WG→DC: read error: %s", err)
 				return
 			}
-			wgToVP8++
-			if wgToVP8 <= 5 || wgToVP8%500 == 0 {
-				logger.Printf("WG→VP8: pkt #%d size=%d", wgToVP8, n)
+			wgToDC++
+			if wgToDC <= 5 || wgToDC%500 == 0 {
+				logger.Printf("WG→DC: pkt #%d size=%d", wgToDC, n)
 			}
 			if _, err = pconn.WriteTo(buf[:n], nil); err != nil {
-				logger.Printf("WG→VP8: write error: %s", err)
+				logger.Printf("WG→DC: write error: %s", err)
 				return
 			}
 		}
 	}()
 
 	wg.Wait()
-	logger.Printf("VP8 bridge closed (VP8→WG: %d pkts, WG→VP8: %d pkts)", vp8ToWG, wgToVP8)
+	logger.Printf("DC bridge closed (DC→WG: %d pkts, WG→DC: %d pkts)", dcToWG, wgToDC)
 }
 
 // ─── Web API handlers ───

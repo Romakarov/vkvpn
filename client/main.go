@@ -675,7 +675,7 @@ func runVP8Client(ctx context.Context, listenAddr string, vkLink string) {
 	}
 }
 
-// runVP8TelemostClient tunnels WireGuard through Yandex Telemost video stream.
+// runVP8TelemostClient tunnels WireGuard through Yandex Telemost DataChannel.
 func runVP8TelemostClient(ctx context.Context, listenAddr string, confLink string) {
 	listenUDP, err := net.ResolveUDPAddr("udp", listenAddr)
 	if err != nil {
@@ -686,7 +686,7 @@ func runVP8TelemostClient(ctx context.Context, listenAddr string, confLink strin
 		log.Fatalf("Listen UDP: %s", err)
 	}
 	defer wgConn.Close()
-	log.Printf("VP8/Telemost client listening on %s for WireGuard", listenAddr)
+	log.Printf("DC/Telemost client listening on %s for WireGuard", listenAddr)
 
 	for {
 		select {
@@ -696,9 +696,9 @@ func runVP8TelemostClient(ctx context.Context, listenAddr string, confLink strin
 		}
 
 		client := telemost.NewClient(log.Default())
-		tunnelReady := make(chan *vp8tunnel.Tunnel, 1)
-		client.OnTunnel = func(t *vp8tunnel.Tunnel) {
-			tunnelReady <- t
+		dcReady := make(chan *telemost.DCPacketConn, 1)
+		client.OnDC = func(pconn *telemost.DCPacketConn) {
+			dcReady <- pconn
 		}
 
 		callDone := make(chan error, 1)
@@ -707,30 +707,29 @@ func runVP8TelemostClient(ctx context.Context, listenAddr string, confLink strin
 		}()
 
 		select {
-		case tunnel := <-tunnelReady:
-			log.Printf("VP8/Telemost tunnel ready — bridging WireGuard")
-			pconn := vp8tunnel.NewPacketConn(tunnel)
-			bridgeVP8(ctx, wgConn, pconn, tunnel.Done())
-			log.Printf("VP8/Telemost bridge ended")
+		case pconn := <-dcReady:
+			log.Printf("DC/Telemost tunnel ready — bridging WireGuard")
+			bridgeVP8(ctx, wgConn, pconn, client.DCReady())
+			log.Printf("DC/Telemost bridge ended")
 
 		case err := <-callDone:
 			if ctx.Err() != nil {
 				return
 			}
-			log.Printf("VP8/Telemost call failed: %v", err)
+			log.Printf("DC/Telemost call failed: %v", err)
 		}
 
 		client.Close()
 		if ctx.Err() != nil {
 			return
 		}
-		log.Printf("Reconnecting VP8/Telemost in 5s...")
+		log.Printf("Reconnecting DC/Telemost in 5s...")
 		time.Sleep(5 * time.Second)
 	}
 }
 
 // bridgeVP8 forwards packets between local WireGuard UDP and VP8 tunnel.
-func bridgeVP8(ctx context.Context, wgConn *net.UDPConn, pconn *vp8tunnel.PacketConn, tunnelDone <-chan struct{}) {
+func bridgeVP8(ctx context.Context, wgConn *net.UDPConn, pconn net.PacketConn, tunnelDone <-chan struct{}) {
 	ctx2, cancel := context.WithCancel(ctx)
 	defer cancel()
 
