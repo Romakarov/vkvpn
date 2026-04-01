@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -40,7 +41,13 @@ func fetchConferenceInfo(ctx context.Context, confID string) (*conferenceInfo, e
 	fullURL := confBaseURL + path
 	log.Printf("[telemost] Conference API: GET %s", fullURL)
 
-	client := &http.Client{Timeout: 30 * time.Second}
+	// Force IPv4: some VPS hosts don't have IPv6 but cloud-api.yandex.ru resolves to IPv6.
+	transport := &http.Transport{
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			return (&net.Dialer{}).DialContext(ctx, "tcp4", addr)
+		},
+	}
+	client := &http.Client{Timeout: 30 * time.Second, Transport: transport}
 	defer client.CloseIdleConnections()
 
 	req, err := http.NewRequestWithContext(ctx, "GET", fullURL, nil)
