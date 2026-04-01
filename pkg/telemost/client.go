@@ -526,6 +526,11 @@ func (c *Client) DCReady() <-chan struct{} {
 	return c.dcReady
 }
 
+// Done returns a channel that's closed when the client is shut down.
+func (c *Client) Done() <-chan struct{} {
+	return c.done
+}
+
 func truncateJSON(raw json.RawMessage, maxLen int) string {
 	s := string(raw)
 	if len(s) > maxLen {

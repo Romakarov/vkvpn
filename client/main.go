@@ -709,7 +709,7 @@ func runVP8TelemostClient(ctx context.Context, listenAddr string, confLink strin
 		select {
 		case pconn := <-dcReady:
 			log.Printf("DC/Telemost tunnel ready — bridging WireGuard")
-			bridgeVP8(ctx, wgConn, pconn, client.DCReady())
+			bridgeVP8(ctx, wgConn, pconn, client.Done())
 			log.Printf("DC/Telemost bridge ended")
 
 		case err := <-callDone:
